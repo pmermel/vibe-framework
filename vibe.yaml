@@ -1,0 +1,44 @@
+name: vibe-framework
+template: node-api
+adapter: container-app
+providers:
+  - claude
+  - codex
+
+branch_policy:
+  feature_prefix: feature/
+  staging: develop
+  production: main
+
+build:
+  install: npm ci
+  test: npm test
+  build: npm run build
+  output: dist
+
+deploy:
+  preview:
+    target: container-app
+  staging:
+    target: container-app
+  production:
+    target: container-app
+
+azure:
+  region: eastus2
+  resource_group: vibe-framework-rg
+  container_app_environment: vibe-framework-env
+  preview_app_prefix: vibe-framework-pr
+  staging_app: vibe-framework-staging
+  production_app: vibe-framework-prod
+
+github:
+  repo: pmermel/vibe-framework
+  issues_as_work_queue: true
+  workflow_refs:
+    preview: pmermel/vibe-framework/.github/workflows/reusable-preview.yml@v1
+    staging: pmermel/vibe-framework/.github/workflows/reusable-staging.yml@v1
+    production: pmermel/vibe-framework/.github/workflows/reusable-production.yml@v1
+
+approvers:
+  - pmermel
