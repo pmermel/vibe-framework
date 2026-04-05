@@ -1,0 +1,63 @@
+name: Feature
+description: Propose a new capability or enhancement.
+title: "feat: "
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for new features or enhancements to existing functionality.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What should this feature do? One or two sentences.
+    validations:
+      required: true
+
+  - type: textarea
+    id: journey
+    attributes:
+      label: Affected journey
+      description: |
+        Which journey in `.ai/context/USE_CASES.md` does this touch?
+        (Journey 1 – Bootstrap, 2 – Create Project, 3 – Adopt Repo, 4 – Feature Dev, 5 – Cross-Agent Handoff, 6 – Promotion)
+      placeholder: "e.g. Journey 4 — Implement A Feature Through Issue To Branch To PR To Preview"
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Why is this needed? What problem does it solve?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: How will we know this is done? List measurable outcomes.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: What this issue explicitly does NOT cover.
+
+  - type: checkboxes
+    id: provider_neutral
+    attributes:
+      label: Provider neutrality check
+      options:
+        - label: This feature works for both Claude and Codex agents
+          required: true
+        - label: No provider-specific assumptions are baked into the proposed design
+          required: true

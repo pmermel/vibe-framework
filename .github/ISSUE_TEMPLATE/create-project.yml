@@ -1,0 +1,73 @@
+name: Create project
+description: Request creation of a new project repository via the create_project backend action.
+title: "feat(project): create "
+labels: ["create-project"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to trigger Journey 2 — Create A Brand-New Project (see `.ai/context/USE_CASES.md`).
+
+        An agent will invoke the `create_project` backend action based on the details below. Bootstrap prerequisites (framework backend, GitHub App, Azure) must already be in place.
+
+  - type: input
+    id: project_name
+    attributes:
+      label: Project name
+      description: Short, lowercase, hyphenated identifier (becomes the repo name).
+      placeholder: "my-project"
+    validations:
+      required: true
+
+  - type: input
+    id: display_name
+    attributes:
+      label: Display name
+      description: Human-readable name for the project.
+      placeholder: "My Project"
+
+  - type: dropdown
+    id: template
+    attributes:
+      label: Template
+      description: Which scaffold template to use.
+      options:
+        - nextjs
+        - react-vite
+        - node-api
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deploy_adapter
+    attributes:
+      label: Deploy adapter
+      options:
+        - container-app
+        - static-web-app
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Project description
+      description: What is this project for?
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Any other configuration or notes for the agent invoking `create_project`.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: Framework backend is deployed and reachable
+          required: true
+        - label: GitHub App is installed and has repo-creation permissions
+          required: true
+        - label: Azure Container Apps environment is provisioned
+          required: true
