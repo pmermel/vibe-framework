@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/"
+      "type": "stdio",
+      "command": "bash",
+      "args": ["scripts/start-github-mcp.sh"]
     }
   }
 }
