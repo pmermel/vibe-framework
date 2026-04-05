@@ -15,6 +15,10 @@ This framework targets both Claude Code and OpenAI Codex equally. Before committ
 
 `plan.md` in this directory is the authoritative build specification. Implement from it. `claude-plan.md` is working notes only.
 
+## Intended Usage
+
+Read `.ai/context/USE_CASES.md` alongside `plan.md` before making architecture, workflow, or bootstrap changes. It defines the end-to-end journeys the framework is expected to support in practice.
+
 ## Key Decisions
 
 - **Branch model:** `feature/*` → `develop` → `main`

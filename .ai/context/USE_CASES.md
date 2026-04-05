@@ -1,0 +1,148 @@
+# Use Cases
+
+This file defines the intended real-world usage of vibe-framework.
+
+It is not a second `plan.md`. `plan.md` remains the architecture and implementation source of truth. This file translates that architecture into concrete end-to-end journeys that future implementation, issues, and PR reviews must stay aligned with.
+
+If implementation, issues, or PRs conflict with these journeys, this file and `plan.md` win.
+
+## Journey 1 — Bootstrap The Framework Itself
+
+**Actor:** Repo owner
+**Trigger:** First-time setup on a new GitHub account and Azure subscription
+
+### Happy path
+1. The repo owner starts from a shell-capable environment and runs `init.sh`.
+2. The bootstrap flow creates or connects the `vibe-framework` repository.
+3. The bootstrap flow registers or connects the GitHub App, configures its required permissions, and stores its private key securely.
+4. The bootstrap flow provisions the shared Azure resource group and shared Container Apps environment for framework infrastructure.
+5. The bootstrap flow deploys the minimal backend into that shared framework environment.
+6. The bootstrap flow configures GitHub Actions OIDC trust in Azure.
+7. The bootstrap flow exposes the backend as an MCP-compatible endpoint and registers that endpoint for Codex and Claude, or outputs manual registration instructions if automation is unavailable.
+8. The bootstrap flow enables and validates GitHub Codespaces for the framework repository.
+
+### Success outcome
+- The backend is reachable.
+- GitHub App and Azure prerequisites are valid.
+- The framework repo is ready for provider-tool-driven project bootstrap.
+
+### Guardrails / non-goals
+- The backend does not bootstrap itself for the first run.
+- First-time framework bootstrap is always external to the backend.
+- This journey only sets up framework infrastructure, not any specific generated project.
+
+## Journey 2 — Create A Brand-New Project From Phone
+
+**Actor:** User in ChatGPT/Codex or Claude
+**Trigger:** Provider-tool `create_project`
+
+### Happy path
+1. The user invokes `create_project` from their provider app.
+2. The backend creates a new GitHub repository through the GitHub App.
+3. The backend scaffolds the selected template and writes the required framework files.
+4. The backend enables and validates Codespaces for the new repository.
+5. The backend provisions a dedicated Azure Container Apps environment for that project.
+6. The backend creates the project repo's GitHub environments, secrets, variables, and approval settings.
+7. The backend opens an initial bootstrap PR instead of writing directly to the default branch.
+8. GitHub Actions runs the preview workflow on that bootstrap PR.
+9. The backend posts preview status and supporting metadata back to the PR after workflow-driven deployment completes.
+
+### Success outcome
+- A new project repo exists with a reviewable bootstrap PR.
+- Preview deployment is reachable through GitHub workflow execution.
+- The project is ready for normal issue-driven development.
+
+### Guardrails / non-goals
+- No direct commits to the default branch.
+- GitHub remains the source of truth for PR state, preview state, and approvals.
+- Project infrastructure is dedicated to that project and not shared with the framework backend environment.
+
+## Journey 3 — Adopt An Existing Repo
+
+**Actor:** User importing an existing GitHub repository
+**Trigger:** Provider-tool `import_project` or `init.sh --import`
+
+### Happy path
+1. The user selects an existing repository for adoption.
+2. The backend connects the repository through the GitHub App.
+3. The backend enables and validates Codespaces for the repository.
+4. The backend provisions a dedicated Azure Container Apps environment for the project.
+5. The backend creates the repo's GitHub environments, secrets, variables, and approval settings.
+6. The backend opens a bootstrap PR instead of modifying the default branch directly.
+7. That PR adds the framework adoption files plus only the minimum deployment-related changes needed.
+8. GitHub Actions runs the preview workflow on the bootstrap PR.
+9. The backend posts status and supporting metadata back to the PR after the workflow deploy completes.
+
+### Success outcome
+- The existing repository is adoptable through a reviewable bootstrap PR.
+- The repo gains framework structure without losing GitHub-centered review and approval.
+
+### Guardrails / non-goals
+- Never rewrite or directly modify the default branch during adoption.
+- Avoid unrelated app refactors.
+- Only make application-code changes when required for deployability, and keep them clearly visible in the bootstrap PR.
+
+## Journey 4 — Implement A Feature Through Issue To Branch To PR To Preview
+
+**Actor:** Claude or Codex
+**Trigger:** GitHub issue assignment or claim
+
+### Happy path
+1. An agent claims a GitHub issue and associates it with a `feature/*` branch.
+2. The agent works through its native remote execution path.
+3. The agent opens or updates a PR linked to the issue.
+4. GitHub Actions deploys an Azure-hosted preview environment for that PR as the validation build for the proposed change.
+5. After deployment completes, the backend posts screenshots, status, and related metadata to the PR.
+6. The user reviews that Azure-hosted validation surface from phone or desktop and leaves feedback in GitHub or the provider app.
+7. The agent iterates on the same issue and PR until preview validation passes.
+8. The PR is merged only after the validation build is approved.
+
+### Success outcome
+- Every feature change is traceable from issue to branch to PR to preview.
+- Preview review is GitHub-centered, accessible from mobile, and tied to an Azure-hosted validation build before merge.
+
+### Guardrails / non-goals
+- GitHub Actions own preview deployment.
+- The backend only enriches the PR after workflow-driven deployment completes.
+- The provider session is not the source of truth for work state.
+- Validation should happen on the PR preview before merge, not by merging first and checking production later.
+
+## Journey 5 — Cross-Agent Handoff On The Same Work
+
+**Actor:** Outgoing provider and incoming provider
+**Trigger:** One agent stops and another resumes the same branch or PR
+
+### Happy path
+1. The outgoing provider posts a summary comment on the PR describing current status, remaining work, and any risks.
+2. The incoming provider reads the GitHub issue, PR, and comments rather than relying on chat-session memory.
+3. The incoming provider posts a takeover comment before pushing new changes.
+4. Work continues on the same branch and PR with GitHub preserving the shared state.
+
+### Success outcome
+- Either provider can continue work started by the other without ambiguity.
+- Handoff is preserved in GitHub and reviewable later.
+
+### Guardrails / non-goals
+- Only one provider actively writes to a branch at a time.
+- GitHub issue and PR comments are the canonical handoff mechanism.
+- Hidden agent-local context is never required for continuation.
+
+## Journey 6 — Promote Validated Work To Staging And Production
+
+**Actor:** User plus GitHub Actions
+**Trigger:** Merge to `develop`, then PR from `develop` to `main`
+
+### Happy path
+1. A validated feature PR is merged into `develop`.
+2. GitHub Actions deploys the staging environment from `develop`.
+3. The user reviews staging and opens or approves the promotion flow from `develop` to `main`.
+4. GitHub Actions deploys production only after the required GitHub approval gate is satisfied.
+
+### Success outcome
+- Staging and production releases happen through explicit GitHub-controlled transitions.
+- Production release remains auditable and user-approved.
+
+### Guardrails / non-goals
+- The backend never owns promotion.
+- The backend never autonomously releases to production.
+- Production deployment must remain gated by GitHub approvals, not agent discretion.

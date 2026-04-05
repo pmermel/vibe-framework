@@ -40,6 +40,7 @@ jobs:
           test -f .ai/context/AZURE_TARGETS.md
           test -f .ai/context/VIBE_YAML_SCHEMA.md
           test -f .ai/context/BOOTSTRAP_CONTRACTS.md
+          test -f .ai/context/USE_CASES.md
 
       # -----------------------------------------------------------------------
       # vibe.yaml schema validation
