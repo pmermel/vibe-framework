@@ -25,6 +25,25 @@ const actions: Record<string, (params: Record<string, unknown>) => Promise<unkno
   post_status: postStatus,
 };
 
+/**
+ * handleAction
+ *
+ * Dispatches a POST /action request to the matching action handler.
+ * Validates the top-level request shape (requires `action` string, optional `params`
+ * object) and returns structured JSON for all outcomes.
+ *
+ * Does NOT validate action-specific params — each action owns its own Zod schema
+ * and throws `"Invalid params: ..."` on failure, which this function catches and
+ * converts to a 400 response.
+ *
+ * Response shapes:
+ * - 400: malformed request body or action param validation failure
+ * - 404: unrecognised action name
+ * - 500: unexpected action error (logged to console)
+ * - 200: `{ ok: true, result: <action return value> }`
+ *
+ * Errors never propagate as unhandled rejections — all paths return JSON.
+ */
 export async function handleAction(req: Request, res: Response): Promise<void> {
   const parsed = ActionRequest.safeParse(req.body);
   if (!parsed.success) {
