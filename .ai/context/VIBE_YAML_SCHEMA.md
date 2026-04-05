@@ -67,6 +67,7 @@ Azure resource configuration.
 |---|---|---|
 | `region` | string | Azure region. Default: `eastus2` |
 | `resource_group` | string | Resource group name |
+| `registry` | string | Azure Container Registry name — alphanumeric only, globally unique, 5–50 chars. Convention: app name with hyphens removed + `acr` suffix (e.g. `myappacr`) |
 | `container_app_environment` | string | Container Apps environment name |
 | `preview_app_prefix` | string | Prefix for ephemeral preview Container Apps |
 | `staging_app` | string | Staging Container App name |
@@ -90,6 +91,7 @@ github:
     preview: pmermel/vibe-framework/.github/workflows/reusable-preview.yml@v1
     staging: pmermel/vibe-framework/.github/workflows/reusable-staging.yml@v1
     production: pmermel/vibe-framework/.github/workflows/reusable-production.yml@v1
+    preview_ttl_cleanup: pmermel/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
 ```
 
 - References must be pinned to a release tag or commit SHA — never `@main`.
@@ -138,6 +140,7 @@ deploy:
 azure:
   region: eastus2
   resource_group: my-app-rg
+  registry: myappacr
   container_app_environment: my-app-env
   preview_app_prefix: my-app-pr
   staging_app: my-app-staging
@@ -150,6 +153,7 @@ github:
     preview: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-preview.yml@v1
     staging: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-staging.yml@v1
     production: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-production.yml@v1
+    preview_ttl_cleanup: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
 
 approvers:
   - YOUR_GITHUB_USERNAME
