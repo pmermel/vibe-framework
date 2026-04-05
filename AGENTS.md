@@ -1,0 +1,119 @@
+# Vibe Framework — Codex Agent Instructions
+
+Reusable AI-agnostic development framework. Phone is the only required device. Either Claude Code or OpenAI Codex can generate and manage code. GitHub is the canonical system of record.
+
+## Provider Neutrality — Read This First
+
+This framework targets both Claude Code and OpenAI Codex equally. Before committing any file, check it against all four gates:
+
+1. **Codex MCP/tool connectivity** — Tool interfaces, action names, and response shapes must be provider-neutral. Would this work if Claude is calling the backend via MCP?
+2. **GitHub-centered handoff** — Work state lives in GitHub (issues, branches, PRs, comments), not in any agent's session. Either AI must be able to pick up any branch cold.
+3. **Provider-neutral `vibe.yaml`** — No Codex-specific fields, OpenAI-only references, or provider assumptions in the project manifest.
+4. **Non-Codex runtime paths** — Every script, workflow, and backend action must function correctly if Codex is never involved.
+
+## Canonical Spec
+
+`plan.md` in this directory is the authoritative build specification. Implement from it. Do not deviate without flagging the deviation first.
+
+## Key Decisions
+
+- **Branch model:** `feature/*` → `develop` → `main`
+- **Deploy default:** Azure Container Apps (one dedicated environment per project)
+- **Deploy static:** Azure Static Web Apps (`adapter: static-web-app` in `vibe.yaml`)
+- **Auth:** GitHub Actions OIDC to Azure — no long-lived secrets
+- **Repo automation:** GitHub App (not PAT)
+- **Workflow refs:** Pinned to release tags or SHAs — never `@main`
+- **Project config:** `vibe.yaml` is single source of truth; wrapper workflows generated from `github.workflow_refs`
+- **Work queue:** GitHub Issues — AI claims issue, creates linked branch, posts status back
+- **Branch ownership:** One active writer at a time; handoff comment required before second agent pushes
+- **Bootstrap:** `init.sh` required for first framework bootstrap (backend doesn't exist yet); `bootstrap_framework` backend action is repair/reconfiguration only
+- **Promotion:** GitHub-owned — PR merges and environment approval gates only; backend never initiates deployments
+
+## Commands
+
+```bash
+# Install dependencies (once backend package exists)
+npm ci
+
+# Type-check the backend
+npx tsc --noEmit
+
+# Validate Bicep templates
+az bicep build --file infrastructure/container-apps-env.bicep
+
+# Run init.sh (framework bootstrap)
+bash scripts/init.sh
+
+# Lint
+npm run lint
+```
+
+## Repository Structure
+
+```
+vibe-framework/
+├── .ai/context/          # Shared conventions for both agents
+├── .devcontainer/        # Codespaces config (Claude Code path)
+├── .github/workflows/    # Reusable pipeline logic — all projects call these
+├── infrastructure/       # Azure Bicep templates
+├── scripts/              # init.sh, setup-azure.sh, setup-github.sh
+├── templates/            # Project scaffolds (nextjs, react-vite, node-api)
+├── AGENTS.md             # This file — Codex operating instructions
+├── CLAUDE.md             # Claude Code operating instructions
+├── plan.md               # Authoritative build spec
+└── vibe.yaml             # Framework's own manifest
+```
+
+## Git Workflow — Non-Negotiable
+
+**Branch before touching any file.** No direct commits to `develop` or `main` — ever.
+
+### Branch naming
+| Type | Pattern | Example |
+|---|---|---|
+| Feature | `feature/<topic>` | `feature/vibe-yaml-schema` |
+| Bug fix | `fix/<topic>` | `fix/preview-cleanup-ttl` |
+| Docs | `docs/<topic>` | `docs/agents-md` |
+| Infrastructure | `infra/<topic>` | `infra/container-apps-bicep` |
+| Chore | `chore/<topic>` | `chore/devcontainer-setup` |
+
+### Commit format — Conventional Commits
+```
+<type>(<scope>): <short description>
+
+# Types: feat, fix, docs, chore, infra, test, refactor
+# Examples:
+feat(vibe-yaml): add workflow_refs as canonical source for wrapper generation
+infra(bicep): add container apps environment template
+docs(agents-md): add provider neutrality checklist
+chore(devcontainer): install gh, az, and node in codespaces image
+```
+
+### Rules
+- **One logical change per commit.** If the message needs "and", split it.
+- **PR required for all merges.** No exceptions, including docs and chores.
+- **Link PRs to issues** when an issue exists.
+- **Small, reviewable PRs.** A PR that touches 20+ files across unrelated concerns should be split.
+
+## Claiming Work
+
+1. Find an open GitHub Issue assigned to you or unassigned.
+2. Post a comment: `Claimed by Codex — starting branch feature/<topic>`.
+3. Create the branch from `develop`.
+4. Work in small commits following the format above.
+5. Open a PR referencing the issue (`Closes #N`).
+6. Post a status comment when done or blocked.
+
+## Handoff Protocol
+
+Before another agent continues your branch:
+1. Post a summary comment on the PR with: current status, what's done, what remains, any risks.
+2. The incoming agent posts a takeover comment before pushing new changes.
+
+## File Generation Checklist
+
+After writing any file, verify:
+- [ ] Works if Claude is the active agent (not Codex)
+- [ ] `vibe.yaml` contains no provider-specific fields
+- [ ] Bootstrap path functions without Codespaces
+- [ ] GitHub state (not session memory) is the handoff mechanism
