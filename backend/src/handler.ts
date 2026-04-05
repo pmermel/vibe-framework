@@ -45,6 +45,14 @@ export async function handleAction(req: Request, res: Response): Promise<void> {
     res.json({ ok: true, result });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Action stubs throw "Invalid params: ..." for Zod validation failures —
+    // these are client errors (400), not internal server errors (500).
+    const isValidationError =
+      err instanceof z.ZodError || message.startsWith("Invalid params:");
+    if (isValidationError) {
+      res.status(400).json({ ok: false, error: message });
+      return;
+    }
     console.error(`Action ${action} failed:`, err);
     res.status(500).json({ ok: false, error: message });
   }
