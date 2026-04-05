@@ -1,0 +1,61 @@
+name: Validate Framework
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop]
+
+jobs:
+  validate:
+    name: Framework validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify devcontainer.json present
+        run: test -f .devcontainer/devcontainer.json
+
+      - name: Verify vibe.yaml present
+        run: test -f vibe.yaml
+
+      - name: Verify AGENTS.md present
+        run: test -f AGENTS.md
+
+      - name: Verify CLAUDE.md present
+        run: test -f CLAUDE.md
+
+      - name: Verify .ai/context files present
+        run: |
+          test -f .ai/context/CONVENTIONS.md
+          test -f .ai/context/STACK.md
+          test -f .ai/context/AZURE_TARGETS.md
+          test -f .ai/context/VIBE_YAML_SCHEMA.md
+          test -f .ai/context/BOOTSTRAP_CONTRACTS.md
+
+      - name: Install PyYAML
+        run: pip install pyyaml --quiet
+
+      - name: Validate vibe.yaml is valid YAML
+        run: |
+          python3 -c "
+          import yaml, sys
+          with open('vibe.yaml') as f:
+              doc = yaml.safe_load(f)
+          required = ['name','template','adapter','providers','branch_policy','build','deploy','azure','github','approvers']
+          missing = [k for k in required if k not in doc]
+          if missing:
+              print('Missing required fields:', missing)
+              sys.exit(1)
+          print('vibe.yaml valid — all required fields present')
+          "
+
+      - name: Type-check backend
+        run: |
+          if [ -d backend ]; then
+            cd backend && npm ci && npx tsc --noEmit
+          else
+            echo "backend/ not present — skipping type-check"
+          fi
