@@ -120,9 +120,23 @@ jobs:
             .
 
       - name: Create or update preview Container App
-        # Creates the Container App on first deploy for this PR.
-        # Updates the image on subsequent pushes to the same PR.
-        # min-replicas 0 means the app scales to zero when idle — zero cost at rest.
+        # ACR pull auth contract (ref: issue #52):
+        # Every Container App that pulls from a private ACR must have a
+        # system-assigned managed identity with the AcrPull role on the registry.
+        # No admin credentials are used — OIDC + managed identity throughout.
+        #
+        # Create path (first deploy for this PR):
+        #   1. Create app with a public placeholder image + system identity.
+        #   2. Retrieve the identity's principal ID.
+        #   3. Assign AcrPull on the ACR to that principal.
+        #   4. Wait for IAM propagation, then update to the private image.
+        #
+        # Update path (subsequent pushes to the same PR):
+        #   System identity and AcrPull are already set — update image only.
+        #
+        # Staging and production Container Apps have managed identity assigned
+        # at provision time by infrastructure/container-apps-env.bicep, so they
+        # skip steps 1-4 and go straight to `az containerapp update`.
         run: |
           APP_NAME="${{ inputs.preview_app_prefix }}-${{ github.event.pull_request.number }}"
           IMAGE="${{ inputs.registry }}.azurecr.io/${{ inputs.app_name }}:pr-${{ github.event.pull_request.number }}"
@@ -131,21 +145,63 @@ jobs:
               --name "$APP_NAME" \
               --resource-group "${{ inputs.resource_group }}" \
               --output none 2>/dev/null; then
+            # Subsequent push — system identity and AcrPull already set at creation
             az containerapp update \
               --name "$APP_NAME" \
               --resource-group "${{ inputs.resource_group }}" \
-              --image "$IMAGE"
+              --image "$IMAGE" \
+              --registry-server "${{ inputs.registry }}.azurecr.io" \
+              --registry-identity system
           else
+            # First deploy for this PR — create with public placeholder, wire identity, then update
+            echo "Creating preview Container App: $APP_NAME"
+
+            # Step 1: Create with public placeholder image and system-assigned identity.
+            # Using a public image avoids the ACR pull auth chicken-and-egg problem
+            # (identity needs AcrPull before it can pull, but we need the app to exist
+            # to get the identity's principal ID).
             az containerapp create \
               --name "$APP_NAME" \
               --resource-group "${{ inputs.resource_group }}" \
               --environment "${{ inputs.container_app_environment }}" \
-              --image "$IMAGE" \
+              --image "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" \
               --target-port ${{ inputs.target_port }} \
               --ingress external \
-              --registry-server "${{ inputs.registry }}.azurecr.io" \
+              --assign-identity "[system]" \
               --min-replicas 0 \
               --max-replicas 1
+
+            # Step 2: Retrieve the system identity's principal ID
+            PRINCIPAL_ID=$(az containerapp show \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --query "identity.principalId" \
+              --output tsv)
+            echo "System identity principal ID: $PRINCIPAL_ID"
+
+            # Step 3: Assign AcrPull to the system identity on the registry
+            ACR_ID=$(az acr show \
+              --name "${{ inputs.registry }}" \
+              --query "id" \
+              --output tsv)
+            az role assignment create \
+              --assignee "$PRINCIPAL_ID" \
+              --scope "$ACR_ID" \
+              --role AcrPull
+            echo "AcrPull role assigned"
+
+            # Step 4: Wait for IAM role propagation before pulling the private image.
+            # Azure role assignments can take up to 2 minutes to propagate globally.
+            echo "Waiting 60 seconds for IAM propagation..."
+            sleep 60
+
+            # Step 5: Update to the private ACR image using system identity for pull auth
+            az containerapp update \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --image "$IMAGE" \
+              --registry-server "${{ inputs.registry }}.azurecr.io" \
+              --registry-identity system
           fi
 
       - name: Get preview URL

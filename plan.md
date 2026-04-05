@@ -113,6 +113,7 @@ deploy:
 azure:
   region: eastus2
   resource_group: my-app-rg
+  registry: myappacr
   container_app_environment: my-app-env
   preview_app_prefix: my-app-pr
   staging_app: my-app-staging
