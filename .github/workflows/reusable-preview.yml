@@ -254,7 +254,8 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # cleanup — runs when a PR is closed (merged or abandoned).
-  # Deletes the ephemeral preview Container App to free Azure resources.
+  # Deletes both the ephemeral preview Container App AND the matching ACR
+  # image (pr-<N>) to free Azure resources completely.
   # Idempotent: silently no-ops if the preview was never deployed or was
   # already deleted (e.g. by TTL cleanup).
   # ---------------------------------------------------------------------------
@@ -285,7 +286,26 @@ jobs:
               --name "$APP_NAME" \
               --resource-group "${{ inputs.resource_group }}" \
               --yes
-            echo "Deleted preview: $APP_NAME"
+            echo "Deleted preview Container App: $APP_NAME"
           else
-            echo "Preview $APP_NAME not found — skipping cleanup"
+            echo "Preview Container App $APP_NAME not found — skipping"
+          fi
+
+      - name: Delete preview ACR image
+        # Remove the pr-<N> image tag from ACR so registry storage doesn't
+        # accumulate from normally closed/merged PRs.
+        # reusable-preview-ttl-cleanup.yml handles the same for abandoned PRs.
+        run: |
+          IMAGE_TAG="pr-${{ github.event.pull_request.number }}"
+          if az acr repository show-tags \
+              --name "${{ inputs.registry }}" \
+              --repository "${{ inputs.app_name }}" \
+              --output tsv 2>/dev/null | grep -q "^${IMAGE_TAG}$"; then
+            az acr repository delete \
+              --name "${{ inputs.registry }}" \
+              --image "${{ inputs.app_name }}:${IMAGE_TAG}" \
+              --yes
+            echo "Deleted ACR image: ${{ inputs.app_name }}:${IMAGE_TAG}"
+          else
+            echo "ACR image ${{ inputs.app_name }}:${IMAGE_TAG} not found — skipping"
           fi

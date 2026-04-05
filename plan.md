@@ -126,6 +126,7 @@ github:
     preview: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-preview.yml@v1
     staging: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-staging.yml@v1
     production: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-production.yml@v1
+    preview_ttl_cleanup: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
 
 approvers:
   - YOUR_GITHUB_USERNAME
