@@ -53,12 +53,25 @@ else
   check ".devcontainer/devcontainer.json present" "file not found in repo"
 fi
 
-# Check Codespaces is enabled (requires admin scope or org visibility)
-CODESPACES_POLICY=$(gh api "repos/$REPO" --jq '.has_projects' 2>/dev/null || echo "unknown")
-# Note: GitHub API does not expose a direct Codespaces enabled flag on public repos.
-# Codespaces availability is controlled at the org/user level, not per-repo via API.
-# The presence of devcontainer.json and a valid image is the practical signal.
-check "Codespaces enablement (org/user level)" "ok — verify manually at https://github.com/$REPO/codespaces/new"
+# Check Codespaces policy via API (requires admin or org:read scope)
+# gh api /orgs/{org}/codespaces/billing or /repos/{owner}/{repo} do not expose
+# a per-repo Codespaces enabled flag for non-org repos via public API.
+# We attempt the org-level billing endpoint and fall back to a manual note.
+OWNER="${REPO%%/*}"
+CODESPACES_POLICY=$(gh api "orgs/$OWNER/codespaces/billing" --jq '.visibility' 2>/dev/null || echo "")
+
+if [[ -n "$CODESPACES_POLICY" ]]; then
+  if [[ "$CODESPACES_POLICY" == "disabled" ]]; then
+    check "Codespaces enabled at org level" "DISABLED — enable at https://github.com/organizations/$OWNER/settings/codespaces"
+  else
+    check "Codespaces enabled at org level ($CODESPACES_POLICY)" "ok"
+  fi
+else
+  # Personal accounts or insufficient scope — cannot verify programmatically
+  echo "  [INFO] Codespaces availability cannot be verified via API for personal accounts."
+  echo "         Verify manually: https://github.com/$REPO/codespaces/new"
+  echo "         If Codespaces is unavailable, ensure your account has Codespaces access."
+fi
 
 echo "---"
 echo "Results: $PASS passed, $FAIL failed"
