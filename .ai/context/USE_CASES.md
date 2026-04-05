@@ -6,6 +6,18 @@ It is not a second `plan.md`. `plan.md` remains the architecture and implementat
 
 If implementation, issues, or PRs conflict with these journeys, this file and `plan.md` win.
 
+## Experience Tiers
+
+### Bootstrap tier
+- One-time setup for a new GitHub account and Azure subscription.
+- Operator-owned and shell-required, typically through local shell or Codespaces.
+- Not the part of the product described as phone-first.
+
+### Ongoing work tier
+- Starts after bootstrap prerequisites are already in place.
+- This is the phone-first path: provider tool -> issue -> branch -> PR -> preview -> promotion.
+- All user-facing “work from phone” claims apply to this tier, not to first-time framework bootstrap.
+
 ## Journey 1 — Bootstrap The Framework Itself
 
 **Actor:** Repo owner
@@ -14,7 +26,7 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 ### Happy path
 1. The repo owner starts from a shell-capable environment and runs `init.sh`.
 2. The bootstrap flow creates or connects the `vibe-framework` repository.
-3. The bootstrap flow registers or connects the GitHub App, configures its required permissions, and stores its private key securely.
+3. The bootstrap flow completes the GitHub App setup sub-flow: create or connect the app, apply required permissions, install it on the target owner, and store the private key securely.
 4. The bootstrap flow provisions the shared Azure resource group and shared Container Apps environment for framework infrastructure.
 5. The bootstrap flow deploys the minimal backend into that shared framework environment.
 6. The bootstrap flow configures GitHub Actions OIDC trust in Azure.
@@ -29,12 +41,13 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 ### Guardrails / non-goals
 - The backend does not bootstrap itself for the first run.
 - First-time framework bootstrap is always external to the backend.
+- This journey may be initiated from Codespaces, but it is still part of the bootstrap tier rather than the phone-first ongoing-work tier.
 - This journey only sets up framework infrastructure, not any specific generated project.
 
-## Journey 2 — Create A Brand-New Project From Phone
+## Journey 2 — Create A Brand-New Project From The Ongoing Work Tier
 
 **Actor:** User in ChatGPT/Codex or Claude
-**Trigger:** Provider-tool `create_project`
+**Trigger:** Provider-tool `create_project` after bootstrap prerequisites already exist
 
 ### Happy path
 1. The user invokes `create_project` from their provider app.
@@ -56,11 +69,12 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 - No direct commits to the default branch.
 - GitHub remains the source of truth for PR state, preview state, and approvals.
 - Project infrastructure is dedicated to that project and not shared with the framework backend environment.
+- This journey assumes the bootstrap tier has already been completed successfully.
 
 ## Journey 3 — Adopt An Existing Repo
 
 **Actor:** User importing an existing GitHub repository
-**Trigger:** Provider-tool `import_project` or `init.sh --import`
+**Trigger:** Provider-tool `import_project` or `init.sh --import` after bootstrap prerequisites already exist
 
 ### Happy path
 1. The user selects an existing repository for adoption.
@@ -81,6 +95,7 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 - Never rewrite or directly modify the default branch during adoption.
 - Avoid unrelated app refactors.
 - Only make application-code changes when required for deployability, and keep them clearly visible in the bootstrap PR.
+- This journey assumes the GitHub App, Azure trust, and backend MCP endpoint already exist from the bootstrap tier.
 
 ## Journey 4 — Implement A Feature Through Issue To Branch To PR To Preview
 

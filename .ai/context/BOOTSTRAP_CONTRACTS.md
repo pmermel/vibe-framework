@@ -14,6 +14,29 @@ Phase 3 (`create_project`, `import_project`). This document describes the **inte
 contract**, not the current behaviour. Do not assume any action has side effects until
 its implementation status is updated here.
 
+## Validation Gates
+
+These gates prevent the framework from expanding backend surface area faster than the core architecture is proven.
+
+1. **MCP connectivity gate**
+   - Before broadening backend action implementation, prove that a live deployed backend can be invoked from both Codex and Claude through MCP using a low-risk action such as `post_status` or `capture_preview`.
+   - If either provider cannot invoke the backend reliably, treat that as an architecture blocker rather than continuing to add action implementations on assumption.
+2. **Walking skeleton gate**
+   - Before completing all backend stubs, prove one complete vertical slice: `create_project` -> real repository -> bootstrap PR for the validated Next.js path.
+   - The first proof may defer full Azure provisioning, but the GitHub flow must be real and observable entirely through GitHub state.
+
+## GitHub App Setup Sub-Flow
+
+GitHub App setup is a first-class bootstrap dependency, not a checklist bullet. Full setup details live in `.ai/context/GITHUB_APP_SETUP.md`.
+
+### Responsibilities
+1. Create a new GitHub App or connect an existing one intended for repository automation.
+2. Apply the required permissions for bootstrap and ongoing repo automation.
+3. Install the app on the target user or organization and the framework repo.
+4. Export the private key and store it in Azure Key Vault or a Container Apps secret.
+5. Mint installation tokens at runtime from the private key rather than storing PATs.
+6. Fail closed if permissions, installation scope, or private-key storage are incomplete.
+
 ## Framework Bootstrap
 
 **Trigger:** `init.sh` (first-time only — backend does not exist yet)
@@ -21,7 +44,7 @@ its implementation status is updated here.
 
 ### Steps
 1. Create or connect the `vibe-framework` GitHub repository.
-2. Register or connect the GitHub App with required permissions:
+2. Complete the GitHub App setup sub-flow with required permissions:
    - Contents: read/write
    - Pull requests: read/write
    - Issues: read/write
@@ -29,7 +52,7 @@ its implementation status is updated here.
    - Environments: read/write
    - Secrets and variables: read/write
    - Administration: read/write (branch protections)
-3. Store GitHub App private key in Azure Key Vault or Container Apps secret.
+3. Store the GitHub App private key in Azure Key Vault or Container Apps secret.
 4. Connect Codex cloud to the target GitHub account via OAuth or repository access flow.
 5. Enable and validate GitHub Codespaces for the framework repository.
 6. Provision shared Azure resource group and Container Apps environment.
@@ -51,6 +74,8 @@ its implementation status is updated here.
 
 **Trigger:** Provider tool call or `init.sh --new`
 **Use case:** Brand-new project with no existing GitHub repo.
+
+This action belongs to the ongoing work tier, but it is only valid after framework bootstrap has already completed.
 
 ### Steps
 1. Create a new GitHub repo through the GitHub App.
@@ -81,6 +106,8 @@ its implementation status is updated here.
 
 **Trigger:** Provider tool call or `init.sh --import`
 **Use case:** Adopting an existing GitHub repo into the framework.
+
+This action belongs to the ongoing work tier, but it is only valid after framework bootstrap has already completed.
 
 ### Steps
 1. Connect the existing GitHub repo through the GitHub App.
