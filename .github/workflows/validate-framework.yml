@@ -15,6 +15,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # -----------------------------------------------------------------------
+      # Framework file prerequisites
+      # Every file below must exist on any branch that claims to be framework-
+      # compatible. Missing files = broken bootstrap contract.
+      # Failure means: a required framework file was deleted or never created.
+      # -----------------------------------------------------------------------
       - name: Verify devcontainer.json present
         run: test -f .devcontainer/devcontainer.json
 
@@ -35,6 +41,12 @@ jobs:
           test -f .ai/context/VIBE_YAML_SCHEMA.md
           test -f .ai/context/BOOTSTRAP_CONTRACTS.md
 
+      # -----------------------------------------------------------------------
+      # vibe.yaml schema validation
+      # Checks that vibe.yaml is parseable YAML and contains all top-level
+      # fields required by the bootstrap contract (see VIBE_YAML_SCHEMA.md).
+      # Failure means: a required field was removed or vibe.yaml is malformed.
+      # -----------------------------------------------------------------------
       - name: Install PyYAML
         run: pip install pyyaml --quiet
 
@@ -52,6 +64,13 @@ jobs:
           print('vibe.yaml valid — all required fields present')
           "
 
+      # -----------------------------------------------------------------------
+      # Backend type-check
+      # Catches TypeScript regressions before they reach develop or main.
+      # Guarded with [ -d backend ] so branches that predate the backend
+      # directory don't fail unnecessarily.
+      # Failure means: a TypeScript type error was introduced in the backend.
+      # -----------------------------------------------------------------------
       - name: Type-check backend
         run: |
           if [ -d backend ]; then

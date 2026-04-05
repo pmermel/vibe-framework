@@ -2,6 +2,18 @@
 
 Defines the contracts for all bootstrap actions in vibe-framework. Both providers must implement or invoke these contracts identically.
 
+## Implementation Status (v0.1 — stubs only)
+
+All actions documented below are currently **param-validation stubs**. They:
+- Accept and validate the documented params (Zod schemas enforced — invalid params → 400)
+- Return `{ status: "not_implemented" }` for any valid request
+- Do **not** make GitHub API calls, Azure API calls, or any external requests
+
+Full implementation is planned for Phase 2 (`configure_cloud`, `configure_repo`) and
+Phase 3 (`create_project`, `import_project`). This document describes the **intended
+contract**, not the current behaviour. Do not assume any action has side effects until
+its implementation status is updated here.
+
 ## Framework Bootstrap
 
 **Trigger:** `init.sh` (first-time only — backend does not exist yet)
