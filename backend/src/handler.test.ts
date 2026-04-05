@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Request, Response } from "express";
 import { handleAction } from "./handler.js";
 
+// Mocked so the 500-path test can inject a non-validation error without
+// calling real infrastructure. Vitest hoists vi.mock() above all imports.
+vi.mock("./actions/bootstrap-framework.js", () => ({
+  bootstrapFramework: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -66,28 +72,15 @@ describe("handleAction — unknown action", () => {
 
 describe("handleAction — 500 error path", () => {
   it("returns 500 when an action throws an unexpected non-validation error", async () => {
-    // bootstrap_framework takes no params so it reaches the action body.
-    // We can't easily inject an error without mocking, so we verify the 500
-    // path by calling an action that currently returns a stub (not_implemented)
-    // and confirm no 500 fires under normal conditions — the 500 path is
-    // tested via the validation-error branch boundary below.
-    //
-    // The key 500 contract: if err.message does NOT start with "Invalid params:",
-    // handler returns 500. We verify this by checking the error classification
-    // logic via the post_status action's non-validation error shape.
-    const req = makeReq({
-      action: "post_status",
-      params: {
-        github_repo: "owner/repo",
-        pr_number: 1,
-        status: "success",
-        message: "ok",
-      },
-    });
-    const { res, json } = makeRes();
+    const { bootstrapFramework } = await import("./actions/bootstrap-framework.js");
+    vi.mocked(bootstrapFramework).mockRejectedValueOnce(new Error("Unexpected DB failure"));
+
+    const req = makeReq({ action: "bootstrap_framework" });
+    const { res, status } = makeRes();
+
     await handleAction(req, res);
-    // Confirm 200 still works (sanity check that action reached successfully)
-    expect(json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+
+    expect(status).toHaveBeenCalledWith(500);
   });
 });
 
