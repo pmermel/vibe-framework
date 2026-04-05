@@ -35,6 +35,9 @@ jobs:
           test -f .ai/context/VIBE_YAML_SCHEMA.md
           test -f .ai/context/BOOTSTRAP_CONTRACTS.md
 
+      - name: Install PyYAML
+        run: pip install pyyaml --quiet
+
       - name: Validate vibe.yaml is valid YAML
         run: |
           python3 -c "
