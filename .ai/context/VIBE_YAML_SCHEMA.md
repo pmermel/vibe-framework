@@ -54,11 +54,25 @@ Deployment targets per environment.
 deploy:
   preview:
     target: container-app   # or static-web-app
+    max_concurrent: 3
+    ttl_hours: 48
   staging:
     target: container-app
   production:
     target: container-app
 ```
+
+#### `deploy.preview`
+
+| Field | Type | Description |
+|---|---|---|
+| `target` | string | Preview deploy target: `container-app` or `static-web-app` |
+| `max_concurrent` | number | Maximum active preview environments allowed for the project. Default: `3` |
+| `ttl_hours` | number | Delete or deactivate preview environments after this many hours if they were not cleaned up on PR close. Default: `48` |
+
+- `max_concurrent` and `ttl_hours` are the preview cost-safety contract.
+- Reusable preview lifecycle automation must enforce these values once manifest-driven enforcement is implemented.
+- Defaults must be documented even if the first implementation still uses wrapper-workflow inputs before reading directly from `vibe.yaml`.
 
 ### `azure`
 Azure resource configuration.
@@ -100,6 +114,16 @@ GitHub usernames that may approve production deployments.
 - Type: array of strings
 - Example: `[your-github-username]`
 
+## Deferred Fields
+
+### `cloud`
+
+Do not add a top-level `cloud` field in v1.
+
+- Azure is the only supported cloud target in v1.
+- Reserving `cloud: azure` now would imply multicloud support before non-Azure adapters exist.
+- Introduce `cloud` only when a second cloud target becomes a real supported adapter rather than a placeholder.
+
 ## Provider Neutrality Rules
 
 - No provider-specific fields allowed in `vibe.yaml`.
@@ -130,6 +154,8 @@ build:
 deploy:
   preview:
     target: container-app
+    max_concurrent: 3
+    ttl_hours: 48
   staging:
     target: container-app
   production:

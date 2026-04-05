@@ -43,6 +43,8 @@ build:
 deploy:
   preview:
     target: container-app
+    max_concurrent: 3
+    ttl_hours: 48
   staging:
     target: container-app
   production:

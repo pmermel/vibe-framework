@@ -1,7 +1,7 @@
 # Vibe Framework v1 Implementation Plan
 
 ## Summary
-Build this repository into a reusable framework for future projects where work can be initiated from the native ChatGPT/Codex or Claude apps on phone or desktop, without requiring a physical machine for coding, asset generation, repository operations, preview deployments, or production releases.
+Build this repository into a reusable framework for future projects where, after one-time operator bootstrap from a shell-capable environment, work can be initiated from the native ChatGPT/Codex or Claude apps on phone or desktop without requiring a physical machine for day-to-day coding, asset generation, repository operations, preview deployments, or production releases.
 
 The v1 design is provider-native and GitHub-centered:
 - ChatGPT/Codex and Claude are the user-facing entry points.
@@ -27,8 +27,18 @@ The v1 design is provider-native and GitHub-centered:
 - One active writer per branch at a time
 - Minimal backend in v1, full provider-neutral execution backend deferred
 - `init.sh` remains a supported bootstrap entry point alongside remote-triggered bootstrap
+- Bootstrap tier is operator-owned and requires a shell-capable environment such as Codespaces
+- Ongoing work tier is the phone-first experience: issue -> branch -> PR -> preview
+- Preview cost-control defaults are `deploy.preview.max_concurrent: 3` and `deploy.preview.ttl_hours: 48`
+- `cloud: azure` is deferred in v1 to avoid implying multicloud support before adapters exist
+- Live MCP invocation from both Codex and Claude is a validation gate before broad backend-action expansion
 
 ## Core Architecture
+### Product tiers
+- **Bootstrap tier** is a one-time operator setup path for a new GitHub account and Azure subscription.
+- Bootstrap tier is not marketed as phone-first; it requires a shell-capable environment such as local shell or Codespaces because GitHub App setup, Azure authentication, and first backend deployment happen before provider tools can call the backend.
+- **Ongoing work tier** starts after bootstrap prerequisites are in place and is the part of the product that is phone-first: users create or pick GitHub work, invoke a provider, review previews, and approve promotions from GitHub.
+
 ### Provider-native workflow
 - Users create or select work from GitHub on phone or desktop.
 - Users then instruct ChatGPT/Codex or Claude to work on that GitHub issue or PR.
@@ -105,6 +115,8 @@ build:
 deploy:
   preview:
     target: container-app
+    max_concurrent: 3
+    ttl_hours: 48
   staging:
     target: container-app
   production:
@@ -131,6 +143,8 @@ approvers:
 ```
 
 - `github.workflow_refs` in `vibe.yaml` is the canonical source of truth for reusable workflow version pinning; bootstrap and upgrade automation must generate or update the thin workflow wrapper files from those values rather than maintaining duplicate refs independently.
+- `deploy.preview.max_concurrent` and `deploy.preview.ttl_hours` are the canonical preview cost-safety defaults; reusable preview lifecycle logic must enforce them once manifest-driven cleanup and concurrency controls are implemented.
+- `cloud` is intentionally not a v1 manifest field. Azure is the only supported cloud target in v1, and reserving a top-level cloud selector is deferred until non-Azure adapters are real rather than implied.
 
 ### Backend contract
 - The v1 backend must support these remote actions:
@@ -150,18 +164,10 @@ approvers:
 ## Bootstrap And Project Lifecycle
 ### Framework bootstrap
 - V1 must define a one-time setup path for the framework itself on a new GitHub account and Azure subscription.
+- Framework bootstrap belongs to the bootstrap tier and is operator-owned, not phone-first.
 - The framework bootstrap flow must:
   - create or connect the `vibe-framework` repository
-  - register or connect the GitHub App used for repository automation
-  - configure the GitHub App with the initial required permissions for bootstrap and repo automation:
-    - Contents: read and write
-    - Pull requests: read and write
-    - Issues: read and write
-    - Actions: read and write
-    - Environments: read and write
-    - Secrets and repository variables: read and write
-    - Administration: read and write where required for branch protections and repository settings
-  - store the GitHub App private key in Azure Key Vault or a Container Apps secret so the backend can mint installation tokens at runtime without hardcoding credentials in the repo or plain-text config
+  - complete the GitHub App setup sub-flow used for repository automation, including app creation or connection, permissions, installation, private-key storage, and installation-token minting
   - connect Codex cloud to the target GitHub account or organization through the required OAuth or repository access flow
   - enable and validate GitHub Codespaces for the framework repository so Claude can use a remote workspace without local machine setup
   - provision the shared Azure resource group and Container Apps environment
@@ -173,11 +179,13 @@ approvers:
   - verify that shared prerequisites are functional before project generation begins, including GitHub App auth, Azure login, OIDC trust, backend reachability, and provider MCP connectivity
 - The first framework bootstrap must be triggered by `init.sh` or another external shell-capable setup path, because the backend does not exist until that bootstrap completes.
 - `bootstrap_framework` may exist only as a post-bootstrap backend action for reconfiguration, validation, or repair after the backend has already been deployed.
+- The GitHub App setup sub-flow is documented separately in `.ai/context/GITHUB_APP_SETUP.md` because it is a core bootstrap dependency rather than an implementation detail.
 
 ### Bootstrap path
 - V1 supports two valid project bootstrap paths:
-  - provider-tool-triggered project creation as the canonical phone-first path, using actions such as `create_project` or `import_project`
+  - provider-tool-triggered project creation as the canonical ongoing-work path, using actions such as `create_project` or `import_project`, after bootstrap tier prerequisites already exist
   - `init.sh` as the primary manual operator entry point when a shell-capable environment is available
+- The phone-first experience applies to project work after bootstrap prerequisites exist; it does not remove the need for one-time operator bootstrap.
 - `create_project` is the fresh-repo bootstrap path:
   - create a new GitHub repo through the GitHub App
   - scaffold the selected template
@@ -240,13 +248,16 @@ approvers:
 - Create reusable GitHub workflows for preview, staging, and production.
 - Create the first framework release tag (`v1`) and define the release process for future workflow and template upgrades.
 - Add GitHub bootstrap automation for repo creation, branch protections, environments, labels, approvals, and GitHub App setup.
+- Document the GitHub App setup sub-flow as a first-class bootstrap dependency rather than a checklist bullet.
 - Add GitHub issue templates for feature work, bug fixes, project creation, and project import.
 - Add a PR template covering linked issue, provider/run id, preview URL, screenshots, handoff notes, and validation checklist.
-- Implement preview lifecycle controls in the reusable workflows, including preview cleanup on PR close or merge, preview TTL enforcement, and per-project concurrency limits for active previews.
+- Validate live MCP invocation of a low-risk backend action such as `post_status` or `capture_preview` from both Codex and Claude before broadening backend action implementation.
+- Implement preview lifecycle controls in the reusable workflows, including preview cleanup on PR close or merge, preview TTL enforcement, and per-project concurrency limits for active previews driven by `vibe.yaml` defaults.
 - Add Azure Bicep for Container Apps, OIDC, and optional Static Web Apps adapter resources.
 
 ### Phase 3
 - Build `init.sh` plus the remote bootstrap flow for new and existing repos.
+- Complete one vertical slice before filling in remaining stubs: `create_project` must be able to create a real Next.js repository and open a bootstrap PR, even if Azure provisioning remains partially deferred during the first proof.
 - Scaffold the Next.js template with Dockerfile, workflow wrappers, manifest, provider instruction files, starter app, and Codespaces support.
 - Add generated-repo Codespaces enablement and validation to the project bootstrap flow.
 - Implement existing-repo adoption as a bootstrap PR flow rather than direct default-branch modification.
