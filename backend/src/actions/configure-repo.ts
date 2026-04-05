@@ -8,13 +8,22 @@ const ConfigureRepoParams = z.object({
 });
 
 /**
- * configure_repo
+ * configureRepo
  *
- * Applies GitHub repository settings required for the vibe-framework workflow:
- * - Branch protections on staging and production branches
- * - GitHub labels
- * - GitHub environments (preview, staging, production) with secrets and approval gates
- * - Required status checks
+ * Applies GitHub repository settings required for the vibe-framework pipeline:
+ * branch protections, labels, environments (preview / staging / production),
+ * environment secrets for Azure OIDC, and required status checks.
+ *
+ * Does NOT create or modify source code in the repository.
+ * Does NOT provision Azure resources — use `configureCloud` for that.
+ * Does NOT open or merge pull requests.
+ *
+ * @param params - Must match `ConfigureRepoParams` schema:
+ *   - `github_repo` (string, required, `owner/repo` format)
+ *   - `approvers` (string[], required, min 1 — GitHub usernames for production gate)
+ *   - `staging_branch` (string, optional, default `"develop"`)
+ *   - `production_branch` (string, optional, default `"main"`)
+ * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  */
 export async function configureRepo(params: Record<string, unknown>): Promise<unknown> {
   const parsed = ConfigureRepoParams.safeParse(params);

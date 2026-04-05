@@ -8,13 +8,23 @@ const ConfigureCloudParams = z.object({
 });
 
 /**
- * configure_cloud
+ * configureCloud
  *
- * Provisions Azure resources for a project:
- * - Dedicated resource group
- * - Dedicated Container Apps environment (isolated from framework backend)
- * - Staging and production Container Apps
- * - OIDC federated credentials for preview, staging, and production environments
+ * Provisions Azure infrastructure for a project using the Bicep templates in
+ * `infrastructure/`. Creates a dedicated resource group, Container Apps environment,
+ * staging and production apps, and OIDC federated credentials so GitHub Actions
+ * can deploy without long-lived secrets.
+ *
+ * Does NOT deploy the application — it only provisions the Azure target environments.
+ * Does NOT create or configure the GitHub repository — use `configureRepo` for that.
+ * Does NOT write any files to the project repo.
+ *
+ * @param params - Must match `ConfigureCloudParams` schema:
+ *   - `project_name` (string, required)
+ *   - `github_repo` (string, required, `owner/repo` format)
+ *   - `azure_region` (string, optional, default `"eastus2"`)
+ *   - `adapter` (`"container-app" | "static-web-app"`, optional, default `"container-app"`)
+ * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  */
 export async function configureCloud(params: Record<string, unknown>): Promise<unknown> {
   const parsed = ConfigureCloudParams.safeParse(params);

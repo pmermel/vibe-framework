@@ -8,13 +8,27 @@ const ImportProjectParams = z.object({
 });
 
 /**
- * import_project
+ * importProject
  *
- * Existing-repo adoption path. Connects an existing GitHub repo and
- * opens a bootstrap PR with framework files. Does not modify the
- * default branch directly.
+ * Existing-repo adoption path. Connects an existing GitHub repository to the
+ * vibe-framework by detecting the current stack, generating framework files
+ * (vibe.yaml, CLAUDE.md, AGENTS.md, workflows, devcontainer), and opening a
+ * bootstrap PR.
  *
- * See BOOTSTRAP_CONTRACTS.md for full contract.
+ * Does NOT modify the repository's default branch directly — all changes arrive
+ * via the bootstrap PR, which must be reviewed and merged by a human.
+ * Does NOT modify existing application source code except for the minimum changes
+ * required to make the app deployable (e.g. adding a Dockerfile if absent).
+ * Does NOT merge the bootstrap PR.
+ *
+ * See `.ai/context/BOOTSTRAP_CONTRACTS.md` for the full step-by-step contract.
+ *
+ * @param params - Must match `ImportProjectParams` schema:
+ *   - `github_repo` (string, required, `owner/repo` format)
+ *   - `adapter` (`"container-app" | "static-web-app"`, optional, default `"container-app"`)
+ *   - `azure_region` (string, optional, default `"eastus2"`)
+ *   - `approvers` (string[], required, min 1)
+ * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  */
 export async function importProject(params: Record<string, unknown>): Promise<unknown> {
   const parsed = ImportProjectParams.safeParse(params);
