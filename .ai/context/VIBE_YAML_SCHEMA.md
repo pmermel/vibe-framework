@@ -67,6 +67,7 @@ Azure resource configuration.
 |---|---|---|
 | `region` | string | Azure region. Default: `eastus2` |
 | `resource_group` | string | Resource group name |
+| `registry` | string | Azure Container Registry name — alphanumeric only, globally unique, 5–50 chars. Convention: app name with hyphens removed + `acr` suffix (e.g. `myappacr`) |
 | `container_app_environment` | string | Container Apps environment name |
 | `preview_app_prefix` | string | Prefix for ephemeral preview Container Apps |
 | `staging_app` | string | Staging Container App name |
@@ -138,6 +139,7 @@ deploy:
 azure:
   region: eastus2
   resource_group: my-app-rg
+  registry: myappacr
   container_app_environment: my-app-env
   preview_app_prefix: my-app-pr
   staging_app: my-app-staging

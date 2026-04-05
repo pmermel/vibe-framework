@@ -1,0 +1,235 @@
+name: "Reusable — Preview (Azure Container Apps)"
+# Called by thin wrapper workflows in generated project repos.
+# Builds a container image, pushes it to ACR, and creates or updates
+# an ephemeral Container App for the PR. Cleans up on PR close.
+#
+# Caller example (in generated project):
+#   uses: pmermel/vibe-framework/.github/workflows/reusable-preview.yml@v1
+#   with:
+#     app_name: my-app
+#     resource_group: my-app-rg
+#     container_app_environment: my-app-env
+#     preview_app_prefix: my-app-pr
+#     registry: myappacr
+#   secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Project name — used for ACR image tags and Container App naming"
+        type: string
+        required: true
+      resource_group:
+        description: "Azure resource group containing the Container Apps environment"
+        type: string
+        required: true
+      container_app_environment:
+        description: "Name of the Azure Container Apps managed environment"
+        type: string
+        required: true
+      preview_app_prefix:
+        description: "Prefix for ephemeral preview Container Apps (e.g. my-app-pr → my-app-pr-42)"
+        type: string
+        required: true
+      registry:
+        description: "Azure Container Registry name (without .azurecr.io)"
+        type: string
+        required: true
+      dockerfile:
+        description: "Path to Dockerfile relative to repo root"
+        type: string
+        default: "./Dockerfile"
+      install_command:
+        description: "Dependency install command"
+        type: string
+        default: "npm ci"
+      build_command:
+        description: "Application build command"
+        type: string
+        default: "npm run build"
+      target_port:
+        description: "Port the container listens on"
+        type: number
+        default: 3000
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+    outputs:
+      preview_url:
+        description: "HTTPS URL of the deployed preview environment"
+        value: ${{ jobs.deploy.outputs.preview_url }}
+
+# One active deploy per PR. New pushes cancel the in-progress deploy,
+# preventing parallel builds from accumulating on the same PR.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # deploy — runs on PR open, synchronize, and reopen.
+  # Builds a container image via `az acr build` (no local Docker required),
+  # then creates or updates the ephemeral Container App for this PR.
+  # Posts the preview URL as a PR comment, updating on subsequent pushes.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy preview
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write      # required for OIDC token exchange with Azure
+      contents: read
+      pull-requests: write  # required to post the preview URL comment
+    outputs:
+      preview_url: ${{ steps.get-url.outputs.preview_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Build application
+        run: ${{ inputs.build_command }}
+
+      - name: Azure login (OIDC)
+        # Authenticates using federated credentials — no long-lived secrets stored.
+        # The GitHub Actions OIDC token is exchanged for a short-lived Azure token.
+        # Prerequisites: Azure AD app, federated credential, and RBAC roles set up
+        # by infrastructure/oidc-federated-credential.bicep.
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push image to ACR
+        # az acr build submits the Docker context to Azure and builds remotely.
+        # No local Docker daemon required — works in the default GitHub runner.
+        # Image is tagged with the PR number for per-PR isolation.
+        run: |
+          az acr build \
+            --registry "${{ inputs.registry }}" \
+            --image "${{ inputs.app_name }}:pr-${{ github.event.pull_request.number }}" \
+            --file "${{ inputs.dockerfile }}" \
+            .
+
+      - name: Create or update preview Container App
+        # Creates the Container App on first deploy for this PR.
+        # Updates the image on subsequent pushes to the same PR.
+        # min-replicas 0 means the app scales to zero when idle — zero cost at rest.
+        run: |
+          APP_NAME="${{ inputs.preview_app_prefix }}-${{ github.event.pull_request.number }}"
+          IMAGE="${{ inputs.registry }}.azurecr.io/${{ inputs.app_name }}:pr-${{ github.event.pull_request.number }}"
+
+          if az containerapp show \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --output none 2>/dev/null; then
+            az containerapp update \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --image "$IMAGE"
+          else
+            az containerapp create \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --environment "${{ inputs.container_app_environment }}" \
+              --image "$IMAGE" \
+              --target-port ${{ inputs.target_port }} \
+              --ingress external \
+              --registry-server "${{ inputs.registry }}.azurecr.io" \
+              --min-replicas 0 \
+              --max-replicas 1
+          fi
+
+      - name: Get preview URL
+        id: get-url
+        run: |
+          APP_NAME="${{ inputs.preview_app_prefix }}-${{ github.event.pull_request.number }}"
+          FQDN=$(az containerapp show \
+            --name "$APP_NAME" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv)
+          echo "preview_url=https://$FQDN" >> "$GITHUB_OUTPUT"
+
+      - name: Post preview URL to PR
+        # Upserts a single comment identified by the HTML marker.
+        # Subsequent pushes update the existing comment rather than creating duplicates.
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- vibe-preview-url -->';
+            const previewUrl = '${{ steps.get-url.outputs.preview_url }}';
+            const prNumber = context.payload.pull_request.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            const body = [
+              marker,
+              `🚀 **Preview:** ${previewUrl}`,
+              '',
+              `_Deployed from \`${{ github.sha }}\` — updates on each push._`,
+            ].join('\n');
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+  # ---------------------------------------------------------------------------
+  # cleanup — runs when a PR is closed (merged or abandoned).
+  # Deletes the ephemeral preview Container App to free Azure resources.
+  # Idempotent: silently no-ops if the preview was never deployed or was
+  # already deleted (e.g. by TTL cleanup).
+  # ---------------------------------------------------------------------------
+  cleanup:
+    name: Clean up preview
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete preview Container App
+        run: |
+          APP_NAME="${{ inputs.preview_app_prefix }}-${{ github.event.pull_request.number }}"
+          if az containerapp show \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --output none 2>/dev/null; then
+            az containerapp delete \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --yes
+            echo "Deleted preview: $APP_NAME"
+          else
+            echo "Preview $APP_NAME not found — skipping cleanup"
+          fi

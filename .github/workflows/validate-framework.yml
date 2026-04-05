@@ -42,6 +42,13 @@ jobs:
           test -f .ai/context/BOOTSTRAP_CONTRACTS.md
           test -f .ai/context/USE_CASES.md
 
+      - name: Verify reusable workflow files present
+        run: |
+          test -f .github/workflows/reusable-preview.yml
+          test -f .github/workflows/reusable-staging.yml
+          test -f .github/workflows/reusable-production.yml
+          test -f .github/workflows/reusable-preview-ttl-cleanup.yml
+
       # -----------------------------------------------------------------------
       # vibe.yaml schema validation
       # Checks that vibe.yaml is parseable YAML and contains all top-level
@@ -58,6 +65,11 @@ jobs:
           with open('vibe.yaml') as f:
               doc = yaml.safe_load(f)
           required = ['name','template','adapter','providers','branch_policy','build','deploy','azure','github','approvers']
+          azure_required = ['region','resource_group','registry','container_app_environment','preview_app_prefix','staging_app','production_app']
+          azure_missing = [k for k in azure_required if k not in doc.get('azure', {})]
+          if azure_missing:
+              print('Missing required azure fields:', azure_missing)
+              sys.exit(1)
           missing = [k for k in required if k not in doc]
           if missing:
               print('Missing required fields:', missing)
