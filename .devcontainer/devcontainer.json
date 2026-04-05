@@ -13,7 +13,7 @@
       "version": "20"
     }
   },
-  "postCreateCommand": "(cd backend && npm ci) 2>/dev/null || true",
+  "postCreateCommand": "[ -d backend ] && (cd backend && npm ci)",
   "customizations": {
     "vscode": {
       "extensions": [
