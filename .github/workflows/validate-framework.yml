@@ -80,11 +80,15 @@ jobs:
           if refs_missing:
               print('Missing required github.workflow_refs entries:', refs_missing)
               sys.exit(1)
-          unpinned = [k for k, v in refs.items() if str(v).endswith('@main')]
+          import re
+          # Valid pins: @v<tag> (e.g. @v1, @v1.2) or @<40-char SHA>.
+          # Anything else (including @main, @develop, @HEAD) is rejected.
+          pin_pattern = re.compile(r'@(v\d[\w.]*|[0-9a-f]{40})$')
+          unpinned = [k for k, v in refs.items() if not pin_pattern.search(str(v))]
           if unpinned:
-              print('workflow_refs must be pinned to a release tag or SHA, never @main:', unpinned)
+              print('workflow_refs must be pinned to a release tag (e.g. @v1) or full SHA, not a branch:', unpinned)
               sys.exit(1)
-          print('vibe.yaml valid — all required fields, workflow_refs present and pinned')
+          print('vibe.yaml valid — all required fields present, workflow_refs pinned to tags/SHAs')
           "
 
       # -----------------------------------------------------------------------
