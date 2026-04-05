@@ -47,7 +47,25 @@ describe("capturePreview — param validation", () => {
     ).rejects.toThrow("Invalid params:");
   });
 
-  // Note: the viewport schema uses z.number() without .positive() — negative
-  // dimensions are not rejected at the Zod layer and would only fail at
-  // Playwright runtime. No validation test is added for this case.
+  it("throws Invalid params when viewport.width is negative", async () => {
+    await expect(
+      capturePreview({
+        url: "https://example.com",
+        github_repo: "owner/repo",
+        pr_number: 1,
+        viewport: { width: -1, height: 844 },
+      })
+    ).rejects.toThrow("Invalid params:");
+  });
+
+  it("throws Invalid params when viewport.height is negative", async () => {
+    await expect(
+      capturePreview({
+        url: "https://example.com",
+        github_repo: "owner/repo",
+        pr_number: 1,
+        viewport: { width: 390, height: -1 },
+      })
+    ).rejects.toThrow("Invalid params:");
+  });
 });

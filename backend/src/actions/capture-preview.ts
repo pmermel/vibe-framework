@@ -7,8 +7,8 @@ const CapturePreviewParams = z.object({
   pr_number: z.number().int().positive(),
   viewport: z
     .object({
-      width: z.number().default(390),
-      height: z.number().default(844),
+      width: z.number().positive().default(390),
+      height: z.number().positive().default(844),
     })
     .default({ width: 390, height: 844 }),
 });
