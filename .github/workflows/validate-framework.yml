@@ -80,7 +80,11 @@ jobs:
           if refs_missing:
               print('Missing required github.workflow_refs entries:', refs_missing)
               sys.exit(1)
-          print('vibe.yaml valid — all required fields and workflow_refs present')
+          unpinned = [k for k, v in refs.items() if str(v).endswith('@main')]
+          if unpinned:
+              print('workflow_refs must be pinned to a release tag or SHA, never @main:', unpinned)
+              sys.exit(1)
+          print('vibe.yaml valid — all required fields, workflow_refs present and pinned')
           "
 
       # -----------------------------------------------------------------------
