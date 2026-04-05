@@ -13,6 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@octokit/rest": "^22.0.1",
     "express": "^4.18.2",
     "playwright": "^1.40.0",
     "zod": "^3.22.4"
