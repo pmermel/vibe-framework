@@ -1,26 +1,51 @@
 {
+  // Codespaces environment for the Claude Code path.
+  // Provides Node 20, Azure CLI (with Bicep), and GitHub CLI pre-installed
+  // so contributors can work on the framework backend and run init.sh
+  // without any local setup. The Codex path does not use this container.
   "name": "vibe-framework",
+
+  // Base image: Node 20 LTS on Debian Bullseye (matches backend runtime).
   "image": "mcr.microsoft.com/devcontainers/typescript-node:1-20-bullseye",
+
   "features": {
+    // Azure CLI with Bicep extension — required for infrastructure work
+    // and for running setup-azure.sh during framework bootstrap.
     "ghcr.io/devcontainers/features/azure-cli:1": {
       "version": "latest",
       "installBicep": true
     },
+    // GitHub CLI — required for scripts that create repos, open PRs,
+    // post comments, and manage environments via the GitHub API.
     "ghcr.io/devcontainers/features/github-cli:1": {
       "version": "latest"
     },
+    // Node 20 feature ensures the correct version is active even if the
+    // base image ships a different default.
     "ghcr.io/devcontainers/features/node:1": {
       "version": "20"
     }
   },
+
+  // Install backend dependencies after the container is created.
+  // Guarded with [ -d backend ] so the command is a no-op on branches
+  // that do not yet include the backend directory.
   "postCreateCommand": "[ -d backend ] && (cd backend && npm ci)",
+
   "customizations": {
     "vscode": {
       "extensions": [
+        // Linting — enforces project ESLint rules in-editor.
         "dbaeumer.vscode-eslint",
+        // Formatting — auto-formats on save via Prettier.
         "esbenp.prettier-vscode",
+        // Bicep language support — syntax highlighting and validation for
+        // infrastructure templates in infrastructure/.
         "ms-azuretools.vscode-bicep",
+        // GitHub Actions — YAML schema validation for workflow files.
         "github.vscode-github-actions",
+        // Azure Account — required for Azure CLI authentication flows
+        // inside the Codespace.
         "ms-vscode.azure-account"
       ],
       "settings": {
@@ -30,8 +55,16 @@
       }
     }
   },
+
+  // GH_TOKEN passthrough: allows GitHub CLI commands inside the Codespace
+  // to authenticate using the token from the local environment (e.g. the
+  // developer's machine or CI). Without this, `gh` commands require
+  // interactive login inside the container.
   "remoteEnv": {
     "GH_TOKEN": "${localEnv:GH_TOKEN}"
   },
+
+  // Port 3000: Next.js / Vite dev server for local template development.
+  // Port 8080: vibe-framework backend (Express) for local MCP endpoint testing.
   "forwardPorts": [3000, 8080]
 }
