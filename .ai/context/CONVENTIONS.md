@@ -49,6 +49,28 @@ Types: `feat`, `fix`, `docs`, `chore`, `infra`, `test`, `refactor`
 - All workflow actions and backend tool names must work from either provider.
 - GitHub is the handoff layer — either provider must be able to resume any branch cold.
 
+## Testing
+
+Every PR that adds or changes backend logic must include tests.
+
+- **Framework**: vitest (`cd backend && npm test`)
+- **File placement**: `src/foo.ts` → `src/foo.test.ts` (co-located, not a separate `__tests__` directory)
+- **Required coverage for new actions**:
+  - Valid params → 200 with `{ ok: true }`
+  - Missing required params → 400
+  - Invalid enum or format → 400
+  - Unknown action name → 404
+- **Required coverage for new handler paths**: happy path and each distinct error branch
+- Tests must pass locally before the PR is opened. Failing tests block merge.
+
+## Documentation
+
+Every PR that adds or changes backend logic must include inline documentation.
+
+- JSDoc comment on every exported function.
+- Comment must state: what the function does, what it does NOT do (e.g. "does not deploy"), and any constraints.
+- If a change affects the backend contract, `vibe.yaml` schema, or bootstrap flow, update the relevant `.ai/context/` file in the same PR.
+
 ## Secrets and Credentials
 
 - No secrets in files, commits, or comments.
