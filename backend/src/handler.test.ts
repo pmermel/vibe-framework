@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Request, Response } from "express";
 import { handleAction } from "./handler.js";
 
+// Mocked so the 500-path test can inject a non-validation error without
+// calling real infrastructure. Vitest hoists vi.mock() above all imports.
+vi.mock("./actions/bootstrap-framework.js", () => ({
+  bootstrapFramework: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -58,6 +64,123 @@ describe("handleAction — unknown action", () => {
 
     expect(status).toHaveBeenCalledWith(404);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 500 error path — action throws a non-validation error
+// ---------------------------------------------------------------------------
+
+describe("handleAction — 500 error path", () => {
+  it("returns 500 when an action throws an unexpected non-validation error", async () => {
+    const { bootstrapFramework } = await import("./actions/bootstrap-framework.js");
+    vi.mocked(bootstrapFramework).mockRejectedValueOnce(new Error("Unexpected DB failure"));
+
+    const req = makeReq({ action: "bootstrap_framework" });
+    const { res, status } = makeRes();
+
+    await handleAction(req, res);
+
+    expect(status).toHaveBeenCalledWith(500);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: dispatch coverage for all 8 actions (happy path via handler)
+// ---------------------------------------------------------------------------
+
+describe("handleAction — dispatch coverage", () => {
+  it("routes bootstrap_framework → 200", async () => {
+    const req = makeReq({ action: "bootstrap_framework" });
+    const { res, json } = makeRes();
+    await handleAction(req, res);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+  });
+
+  it("routes create_project → 200 with valid params", async () => {
+    const req = makeReq({
+      action: "create_project",
+      params: {
+        name: "my-app",
+        template: "nextjs",
+        github_owner: "acme",
+        approvers: ["alice"],
+      },
+    });
+    const { res, json } = makeRes();
+    await handleAction(req, res);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+  });
+
+  it("routes import_project → 200 with valid params", async () => {
+    const req = makeReq({
+      action: "import_project",
+      params: {
+        github_repo: "owner/existing-app",
+        approvers: ["alice"],
+      },
+    });
+    const { res, json } = makeRes();
+    await handleAction(req, res);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+  });
+
+  it("routes configure_repo → 200 with valid params", async () => {
+    const req = makeReq({
+      action: "configure_repo",
+      params: {
+        github_repo: "owner/my-app",
+        approvers: ["alice"],
+      },
+    });
+    const { res, json } = makeRes();
+    await handleAction(req, res);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+  });
+
+  it("routes configure_cloud → 200 with valid params", async () => {
+    const req = makeReq({
+      action: "configure_cloud",
+      params: {
+        project_name: "my-app",
+        github_repo: "owner/my-app",
+      },
+    });
+    const { res, json } = makeRes();
+    await handleAction(req, res);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+  });
+
+  it("routes generate_assets → 200 with valid params", async () => {
+    const req = makeReq({
+      action: "generate_assets",
+      params: {
+        project_name: "my-app",
+        github_repo: "owner/my-app",
+      },
+    });
+    const { res, json } = makeRes();
+    await handleAction(req, res);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+  });
+
+  it("routes post_status → 200 with valid params", async () => {
+    const req = makeReq({
+      action: "post_status",
+      params: {
+        github_repo: "owner/repo",
+        pr_number: 1,
+        status: "success",
+        message: "Deployed",
+      },
+    });
+    const { res, json } = makeRes();
+    await handleAction(req, res);
+    expect(json).toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+  });
+
+  // capture_preview is excluded from dispatch happy-path tests — it launches a
+  // real Playwright browser and requires chromium to be installed. Its param
+  // validation is covered in capture-preview.test.ts.
 });
 
 // ---------------------------------------------------------------------------
