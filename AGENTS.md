@@ -32,11 +32,14 @@ This framework targets both Claude Code and OpenAI Codex equally. Before committ
 ## Commands
 
 ```bash
-# Install dependencies (once backend package exists)
-npm ci
+# Install dependencies
+cd backend && npm ci
+
+# Run tests
+cd backend && npm test
 
 # Type-check the backend
-npx tsc --noEmit
+cd backend && npx tsc --noEmit
 
 # Validate Bicep templates
 az bicep build --file infrastructure/container-apps-env.bicep
@@ -45,7 +48,7 @@ az bicep build --file infrastructure/container-apps-env.bicep
 bash scripts/init.sh
 
 # Lint
-npm run lint
+cd backend && npm run lint
 ```
 
 ## Repository Structure
@@ -94,6 +97,21 @@ chore(devcontainer): install gh, az, and node in codespaces image
 - **PR required for all merges.** No exceptions, including docs and chores.
 - **Link PRs to issues** when an issue exists.
 - **Small, reviewable PRs.** A PR that touches 20+ files across unrelated concerns should be split.
+
+## Testing and Documentation — Required in Every PR
+
+Every PR that adds or changes backend logic must include:
+
+1. **Tests** — vitest unit tests in `backend/src/*.test.ts` covering the changed behaviour.
+   - New action: test valid params → 200, missing required params → 400, invalid enum → 400.
+   - New handler path: test happy path and each error branch.
+   - Run `cd backend && npm test` before pushing. A PR with failing tests will not be merged.
+
+2. **Inline documentation** — JSDoc comment on every exported function explaining what it does, what it does NOT do (e.g. "does not deploy"), and any important constraints.
+
+3. **Context file updates** — if a change affects the backend contract, `vibe.yaml` schema, or bootstrap flow, update the relevant `.ai/context/` file in the same PR.
+
+Tests live alongside the code they test: `src/foo.ts` → `src/foo.test.ts`.
 
 ## Claiming Work
 
