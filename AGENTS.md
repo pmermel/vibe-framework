@@ -1,4 +1,4 @@
-# Vibe Framework
+# Vibe Framework — Codex Agent Instructions
 
 Reusable AI-agnostic development framework. Phone is the only required device. Either Claude Code or OpenAI Codex can generate and manage code. GitHub is the canonical system of record.
 
@@ -6,14 +6,14 @@ Reusable AI-agnostic development framework. Phone is the only required device. E
 
 This framework targets both Claude Code and OpenAI Codex equally. Before committing any file, check it against all four gates:
 
-1. **Codex MCP/tool connectivity** — Tool interfaces, action names, and response shapes must be provider-neutral. Would this work if Codex is calling the backend via MCP?
+1. **Codex MCP/tool connectivity** — Tool interfaces, action names, and response shapes must be provider-neutral. Would this work if Claude is calling the backend via MCP?
 2. **GitHub-centered handoff** — Work state lives in GitHub (issues, branches, PRs, comments), not in any agent's session. Either AI must be able to pick up any branch cold.
-3. **Provider-neutral `vibe.yaml`** — No Claude-specific fields, Anthropic-only references, or provider assumptions in the project manifest.
-4. **Non-Claude runtime paths** — Every script, workflow, and backend action must function correctly if Claude Code is never involved.
+3. **Provider-neutral `vibe.yaml`** — No Codex-specific fields, OpenAI-only references, or provider assumptions in the project manifest.
+4. **Non-Codex runtime paths** — Every script, workflow, and backend action must function correctly if Codex is never involved.
 
 ## Canonical Spec
 
-`plan.md` in this directory is the authoritative build specification. Implement from it. `claude-plan.md` is working notes only.
+`plan.md` in this directory is the authoritative build specification. Implement from it. Do not deviate without flagging the deviation first.
 
 ## Intended Usage
 
@@ -65,8 +65,8 @@ vibe-framework/
 ├── infrastructure/       # Azure Bicep templates
 ├── scripts/              # init.sh, setup-azure.sh, setup-github.sh
 ├── templates/            # Project scaffolds (nextjs, react-vite, node-api)
-├── AGENTS.md             # Codex operating instructions
-├── CLAUDE.md             # This file
+├── AGENTS.md             # This file — Codex operating instructions
+├── CLAUDE.md             # Claude Code operating instructions
 ├── plan.md               # Authoritative build spec
 └── vibe.yaml             # Framework's own manifest
 ```
@@ -92,7 +92,7 @@ vibe-framework/
 # Examples:
 feat(vibe-yaml): add workflow_refs as canonical source for wrapper generation
 infra(bicep): add container apps environment template
-docs(claude-md): add provider neutrality checklist
+docs(agents-md): add provider neutrality checklist
 chore(devcontainer): install gh, az, and node in codespaces image
 ```
 
@@ -117,10 +117,25 @@ Every PR that adds or changes backend logic must include:
 
 Tests live alongside the code they test: `src/foo.ts` → `src/foo.test.ts`.
 
+## Claiming Work
+
+1. Find an open GitHub Issue assigned to you or unassigned.
+2. Post a comment: `Claimed by Codex — starting branch feature/<topic>`.
+3. Create the branch from `develop`.
+4. Work in small commits following the format above.
+5. Open a PR referencing the issue (`Closes #N`).
+6. Post a status comment when done or blocked.
+
+## Handoff Protocol
+
+Before another agent continues your branch:
+1. Post a summary comment on the PR with: current status, what's done, what remains, any risks.
+2. The incoming agent posts a takeover comment before pushing new changes.
+
 ## File Generation Checklist
 
 After writing any file, verify:
-- [ ] Works if Codex is the active agent (not Claude)
+- [ ] Works if Claude is the active agent (not Codex)
 - [ ] `vibe.yaml` contains no provider-specific fields
 - [ ] Bootstrap path functions without Codespaces
 - [ ] GitHub state (not session memory) is the handoff mechanism

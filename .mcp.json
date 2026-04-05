@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "bash",
+      "args": ["/Users/park/dev/vibe-framework/scripts/start-github-mcp.sh"]
+    }
+  }
+}

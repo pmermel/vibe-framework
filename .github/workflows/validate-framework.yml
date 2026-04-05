@@ -1,0 +1,81 @@
+name: Validate Framework
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop]
+
+jobs:
+  validate:
+    name: Framework validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Framework file prerequisites
+      # Every file below must exist on any branch that claims to be framework-
+      # compatible. Missing files = broken bootstrap contract.
+      # Failure means: a required framework file was deleted or never created.
+      # -----------------------------------------------------------------------
+      - name: Verify devcontainer.json present
+        run: test -f .devcontainer/devcontainer.json
+
+      - name: Verify vibe.yaml present
+        run: test -f vibe.yaml
+
+      - name: Verify AGENTS.md present
+        run: test -f AGENTS.md
+
+      - name: Verify CLAUDE.md present
+        run: test -f CLAUDE.md
+
+      - name: Verify .ai/context files present
+        run: |
+          test -f .ai/context/CONVENTIONS.md
+          test -f .ai/context/STACK.md
+          test -f .ai/context/AZURE_TARGETS.md
+          test -f .ai/context/VIBE_YAML_SCHEMA.md
+          test -f .ai/context/BOOTSTRAP_CONTRACTS.md
+          test -f .ai/context/USE_CASES.md
+
+      # -----------------------------------------------------------------------
+      # vibe.yaml schema validation
+      # Checks that vibe.yaml is parseable YAML and contains all top-level
+      # fields required by the bootstrap contract (see VIBE_YAML_SCHEMA.md).
+      # Failure means: a required field was removed or vibe.yaml is malformed.
+      # -----------------------------------------------------------------------
+      - name: Install PyYAML
+        run: pip install pyyaml --quiet
+
+      - name: Validate vibe.yaml is valid YAML
+        run: |
+          python3 -c "
+          import yaml, sys
+          with open('vibe.yaml') as f:
+              doc = yaml.safe_load(f)
+          required = ['name','template','adapter','providers','branch_policy','build','deploy','azure','github','approvers']
+          missing = [k for k in required if k not in doc]
+          if missing:
+              print('Missing required fields:', missing)
+              sys.exit(1)
+          print('vibe.yaml valid — all required fields present')
+          "
+
+      # -----------------------------------------------------------------------
+      # Backend type-check
+      # Catches TypeScript regressions before they reach develop or main.
+      # Guarded with [ -d backend ] so branches that predate the backend
+      # directory don't fail unnecessarily.
+      # Failure means: a TypeScript type error was introduced in the backend.
+      # -----------------------------------------------------------------------
+      - name: Type-check backend
+        run: |
+          if [ -d backend ]; then
+            cd backend && npm ci && npx tsc --noEmit
+          else
+            echo "backend/ not present — skipping type-check"
+          fi

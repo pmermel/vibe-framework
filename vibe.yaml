@@ -1,0 +1,75 @@
+# vibe.yaml — vibe-framework's own manifest
+#
+# This is the framework's self-describing configuration file, not a project
+# template. When init.sh bootstraps a new project, a separate vibe.yaml is
+# generated for that project using the values from CreateProjectParams.
+#
+# Fields below are the canonical schema — see .ai/context/VIBE_YAML_SCHEMA.md
+# for full documentation of each field and its allowed values.
+
+# The name of this repo / project.
+name: vibe-framework
+
+# The template that describes what this repo contains.
+# "node-api" reflects the Express/TypeScript backend in backend/.
+template: node-api
+
+# Deployment adapter for this repo's backend.
+# "container-app" → Azure Container Apps (default for server workloads).
+adapter: container-app
+
+# AI providers that are permitted to work in this repository.
+# Both must be listed; neither has exclusive access.
+providers:
+  - claude
+  - codex
+
+# Branch model: feature branches merge into staging (develop),
+# staging merges into production (main) via PR only.
+branch_policy:
+  feature_prefix: feature/
+  staging: develop
+  production: main
+
+# Build commands for the backend. These are run by GitHub Actions during CI.
+build:
+  install: npm ci
+  test: npm test
+  build: npm run build
+  output: dist
+
+# Deployment targets per environment.
+# All three environments use Container Apps for this backend.
+deploy:
+  preview:
+    target: container-app
+  staging:
+    target: container-app
+  production:
+    target: container-app
+
+# Azure resource configuration for the framework's own infrastructure.
+# Each project that uses the framework gets its own dedicated resource group
+# and Container Apps environment — these values are framework-only.
+azure:
+  region: eastus2
+  resource_group: vibe-framework-rg
+  container_app_environment: vibe-framework-env
+  preview_app_prefix: vibe-framework-pr
+  staging_app: vibe-framework-staging
+  production_app: vibe-framework-prod
+
+# GitHub configuration. workflow_refs is the canonical source for reusable
+# workflow pinning — wrapper workflows in generated projects reference these
+# exact refs. Never use @main; always pin to a release tag or SHA.
+github:
+  repo: pmermel/vibe-framework
+  issues_as_work_queue: true
+  workflow_refs:
+    preview: pmermel/vibe-framework/.github/workflows/reusable-preview.yml@v1
+    staging: pmermel/vibe-framework/.github/workflows/reusable-staging.yml@v1
+    production: pmermel/vibe-framework/.github/workflows/reusable-production.yml@v1
+
+# GitHub usernames who can approve production deployments.
+approvers:
+  - pmermel
