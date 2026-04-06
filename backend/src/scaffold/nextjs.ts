@@ -14,21 +14,27 @@
  *
  * Does NOT generate application business logic — agents write that after bootstrap.
  * Does NOT provision Azure resources — that is handled by configure_cloud.
+ *
+ * **Adapter support:** Only `"container-app"` is implemented in Phase 1.
+ * Callers should check `adapter` before calling this function:
+ * if `adapter === "static-web-app"`, `createProject` returns `not_implemented`
+ * before reaching this function. The `adapter` param is accepted here so that
+ * `vibe.yaml` is generated correctly when static-web-app support is added.
  */
 export function generateNextjsScaffold(params: {
   name: string;
   github_owner: string;
   azure_region: string;
-  adapter: string;
+  adapter: "container-app" | "static-web-app";
   approvers: string[];
   framework_repo: string; // e.g. "pmermel/vibe-framework"
 }): Record<string, string> {
-  const { name, github_owner, azure_region, approvers, framework_repo } = params;
+  const { name, github_owner, azure_region, adapter, approvers, framework_repo } = params;
   const registryName = name.replace(/-/g, "") + "acr";
   const [frameworkOwner] = framework_repo.split("/");
 
   return {
-    "vibe.yaml": vibeYaml({ name, github_owner, azure_region, approvers, registryName, framework_repo }),
+    "vibe.yaml": vibeYaml({ name, github_owner, azure_region, adapter, approvers, registryName, framework_repo }),
     "CLAUDE.md": claudeMd(name),
     "AGENTS.md": agentsMd(name),
     ".devcontainer/devcontainer.json": devcontainer(),
@@ -56,6 +62,7 @@ function vibeYaml(p: {
   name: string;
   github_owner: string;
   azure_region: string;
+  adapter: "container-app" | "static-web-app";
   approvers: string[];
   registryName: string;
   framework_repo: string;
@@ -66,7 +73,7 @@ function vibeYaml(p: {
 # update them via bootstrap automation to keep wrapper workflows in sync.
 name: ${p.name}
 template: nextjs
-adapter: container-app
+adapter: ${p.adapter}
 providers:
   - claude
   - codex
@@ -217,7 +224,9 @@ function previewWrapper(p: { name: string; registryName: string; framework_repo:
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
-    branches: [develop]
+    # Run on PRs targeting any branch — this includes the initial bootstrap PR
+    # (targeting main) as well as ongoing feature PRs (targeting develop).
+    branches: ['**']
 
 jobs:
   preview:

@@ -13,11 +13,11 @@
 //
 // OIDC only — this template does not create or output any client secrets.
 //
-// After deployment the caller stores the output clientId as the appropriate
-// GitHub secret for the environment:
-//   AZURE_CLIENT_ID_PREVIEW   (preview environment)
-//   AZURE_CLIENT_ID_STAGING   (staging environment)
-//   AZURE_CLIENT_ID_PRODUCTION (production environment)
+// After deployment the caller stores the output clientId as the GitHub secret
+// AZURE_CLIENT_ID on the matching GitHub environment (preview / staging / production).
+// Each environment has its own app registration, so the same secret name
+// AZURE_CLIENT_ID is used on all three environments — GitHub scopes secrets to the
+// environment, which is how the reusable workflows and deployment contract expect it.
 //
 // Required Azure RBAC to deploy: Owner (or User Access Administrator + Contributor)
 // on the target resource group, and Application Administrator in Azure AD.
@@ -128,7 +128,7 @@ resource acrPushAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' 
 // Outputs
 // ---------------------------------------------------------------------------
 
-@description('Azure AD application (client) ID. Store as AZURE_CLIENT_ID_<ENVIRONMENT> in GitHub secrets.')
+@description('Azure AD application (client) ID. Store as AZURE_CLIENT_ID in the matching GitHub environment secret (preview / staging / production).')
 output clientId string = adApp.appId
 
 @description('Service principal object ID.')

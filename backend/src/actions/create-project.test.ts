@@ -176,10 +176,10 @@ describe("createProject — nextjs happy path (org owner)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Tests: non-nextjs templates return not_implemented (no API calls)
+// Tests: unimplemented template/adapter combos — no GitHub API calls made
 // ---------------------------------------------------------------------------
 
-describe("createProject — unimplemented templates", () => {
+describe("createProject — unimplemented template/adapter combos", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -199,6 +199,18 @@ describe("createProject — unimplemented templates", () => {
     const result = await createProject({
       name: "my-app",
       template: "node-api",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+    expect(result).toEqual({ status: "not_implemented" });
+    expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("returns not_implemented for static-web-app adapter (Phase 3 deferred)", async () => {
+    const result = await createProject({
+      name: "my-app",
+      template: "nextjs",
+      adapter: "static-web-app",
       github_owner: "acme",
       approvers: ["alice"],
     });

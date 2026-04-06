@@ -1,6 +1,6 @@
 // container-apps-env.bicep
 // Provisions per-project Azure resources:
-//   - Azure Container Apps managed environment (passed in as a parameter)
+//   - Azure Container Apps managed environment (created here — one per project)
 //   - Azure Container Registry (ACR)
 //   - Staging and production Container Apps with system-assigned managed identity
 //   - AcrPull role assignment for staging and production managed identities
@@ -15,9 +15,6 @@
 @description('Short application name — used as prefix for resource names. Must be alphanumeric and hyphens only.')
 param appName string
 
-@description('Resource ID of the existing Container Apps managed environment to deploy apps into.')
-param environment string
-
 @description('Azure region for all resources in this module.')
 param region string = resourceGroup().location
 
@@ -31,6 +28,19 @@ param stagingAppName string
 
 @description('Full name of the production Container App resource.')
 param productionAppName string
+
+// ---------------------------------------------------------------------------
+// Container Apps managed environment (one per project)
+// ---------------------------------------------------------------------------
+
+resource managedEnv 'Microsoft.App/managedEnvironments@2023-05-01' = {
+  name: '${appName}-env'
+  location: region
+  properties: {
+    // Consumption-only workload profile — no dedicated hardware cost when idle.
+    zoneRedundant: false
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Azure Container Registry
@@ -58,7 +68,7 @@ resource stagingApp 'Microsoft.App/containerApps@2023-05-01' = {
     type: 'SystemAssigned'
   }
   properties: {
-    environmentId: environment
+    environmentId: managedEnv.id
     configuration: {
       ingress: {
         external: true
@@ -104,7 +114,7 @@ resource productionApp 'Microsoft.App/containerApps@2023-05-01' = {
     type: 'SystemAssigned'
   }
   properties: {
-    environmentId: environment
+    environmentId: managedEnv.id
     configuration: {
       ingress: {
         external: true
@@ -184,6 +194,9 @@ resource productionAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' 
 // ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
+
+@description('Resource ID of the Container Apps managed environment.')
+output managedEnvironmentId string = managedEnv.id
 
 @description('Login server URL for the ACR (e.g. myappacr.azurecr.io).')
 output acrLoginServer string = acr.properties.loginServer

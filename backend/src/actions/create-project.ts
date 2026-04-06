@@ -18,10 +18,12 @@ const CreateProjectParams = z.object({
  * Fresh-repo bootstrap path. Creates a new GitHub repository under `github_owner`,
  * scaffolds the selected template, and opens a bootstrap PR with all framework files.
  *
- * **Phase 1 support:** Only `"nextjs"` is the validated and implemented template.
- * `"react-vite"` and `"node-api"` are accepted by the schema but are NOT yet
- * implemented — they are deferred to Phase 4. Passing either currently returns
- * `{ status: "not_implemented" }`.
+ * **Phase 1 support:**
+ * - Template: only `"nextjs"` is implemented. `"react-vite"` and `"node-api"` are
+ *   schema-accepted but deferred to Phase 4.
+ * - Adapter: only `"container-app"` is implemented. `"static-web-app"` reusable
+ *   workflows do not yet exist; passing it returns `{ status: "not_implemented" }`.
+ *   Both unsupported combinations return `{ status: "not_implemented" }`.
  *
  * Does NOT commit directly to the default branch — all changes arrive via bootstrap PR.
  * Does NOT deploy the application — deployment is triggered by GitHub Actions after the
@@ -36,13 +38,13 @@ const CreateProjectParams = z.object({
  * @param params - Must match `CreateProjectParams` schema:
  *   - `name` (string, required — new repo name)
  *   - `template` (`"nextjs"` — Phase 1 validated; `"react-vite"` | `"node-api"` deferred to Phase 4)
- *   - `adapter` (`"container-app" | "static-web-app"`, optional, default `"container-app"`)
+ *   - `adapter` (`"container-app"` — Phase 1 validated; `"static-web-app"` deferred to Phase 3)
  *   - `github_owner` (string, required — org or user that will own the repo)
  *   - `azure_region` (string, optional, default `"eastus2"`)
  *   - `approvers` (string[], required, min 1)
  *   - `framework_repo` (string, optional, default `"pmermel/vibe-framework"`)
- * @returns `{ repo_url, pr_url, pr_number }` on success for nextjs template;
- *          `{ status: "not_implemented" }` for unimplemented templates.
+ * @returns `{ repo_url, pr_url, pr_number }` on success for nextjs + container-app;
+ *          `{ status: "not_implemented" }` for unimplemented template/adapter combos.
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  * @throws GitHub API errors if repo creation or Git operations fail.
  */
@@ -54,8 +56,10 @@ export async function createProject(params: Record<string, unknown>): Promise<un
 
   const config = parsed.data;
 
-  // Only nextjs is implemented in Phase 1
-  if (config.template !== "nextjs") {
+  // Only nextjs + container-app is implemented in Phase 1.
+  // react-vite and node-api are deferred to Phase 4.
+  // static-web-app is deferred to Phase 3 (reusable SWA workflows don't exist yet).
+  if (config.template !== "nextjs" || config.adapter !== "container-app") {
     return { status: "not_implemented" };
   }
 
