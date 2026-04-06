@@ -76,6 +76,12 @@ const TOOLS = [
           enum: ["container-app", "static-web-app"],
           description: "Deploy target adapter (default: container-app)",
         },
+        framework_repo: {
+          type: "string",
+          description:
+            "vibe-framework repo in owner/repo format to pin workflow refs against " +
+            "(default: pmermel/vibe-framework)",
+        },
       },
       required: ["name", "template", "github_owner", "approvers"],
       additionalProperties: false,

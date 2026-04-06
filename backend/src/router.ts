@@ -135,17 +135,17 @@ async function handleMcp(
   res: import("express").Response
 ): Promise<void> {
   if (!isDevMode) {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith("Bearer ")) {
-      res.status(401).json({
-        error: "unauthorized",
-        error_description:
-          "Authorization: Bearer <token> header required. " +
-          "Configure real OAuth middleware to issue tokens in production.",
-      });
-      return;
-    }
-    // TODO: validate token against real auth store before production use
+    // /mcp is disabled in production until real token validation is implemented.
+    // Accepting an arbitrary bearer token would expose privileged actions
+    // (create_project, configure_repo, configure_cloud) to any caller who can
+    // reach the endpoint. Re-enable this path once a real auth store is wired up.
+    res.status(501).json({
+      error: "not_implemented",
+      error_description:
+        "MCP endpoint is only available in development mode. " +
+        "Configure real OAuth token validation before enabling in production.",
+    });
+    return;
   }
 
   const transport = new StreamableHTTPServerTransport({

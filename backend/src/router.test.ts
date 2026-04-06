@@ -1,0 +1,126 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import express from "express";
+import request from "supertest";
+
+// Mock MCP server so these tests don't spin up real transport
+vi.mock("./lib/mcp-server.js", () => ({
+  createMcpServer: vi.fn().mockReturnValue({
+    connect: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn(),
+  }),
+}));
+vi.mock("@modelcontextprotocol/sdk/server/streamableHttp.js", () => ({
+  StreamableHTTPServerTransport: vi.fn().mockImplementation(() => ({
+    sessionId: undefined,
+    onclose: undefined,
+    onerror: undefined,
+    onmessage: undefined,
+    start: vi.fn(),
+    close: vi.fn(),
+    send: vi.fn(),
+    handleRequest: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
+vi.mock("./handler.js", () => ({
+  handleAction: vi.fn((_req, res) => res.json({ ok: true })),
+}));
+
+/**
+ * Creates a fresh app with the router mounted, isolated from global NODE_ENV.
+ * We reset modules and re-import so the isDevMode constant is re-evaluated.
+ */
+async function buildApp(nodeEnv: string) {
+  process.env.NODE_ENV = nodeEnv;
+  vi.resetModules();
+  const { router } = await import("./router.js");
+  const app = express();
+  app.use(express.json());
+  app.use(router);
+  return app;
+}
+
+describe("router — OAuth token endpoints", () => {
+  const originalEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalEnv;
+    vi.resetModules();
+  });
+
+  it("POST /oauth/token returns a token in dev mode", async () => {
+    const app = await buildApp("development");
+    const res = await request(app).post("/oauth/token").send({});
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ token_type: "Bearer" });
+    expect(res.body.access_token).toBeDefined();
+  });
+
+  it("POST /oauth/token returns 501 in production mode", async () => {
+    const app = await buildApp("production");
+    const res = await request(app).post("/oauth/token").send({});
+    expect(res.status).toBe(501);
+    expect(res.body.error).toBe("not_implemented");
+  });
+
+  it("GET /oauth/authorize returns 501 in production mode", async () => {
+    const app = await buildApp("production");
+    const res = await request(app).get("/oauth/authorize?redirect_uri=https://example.com/cb");
+    expect(res.status).toBe(501);
+    expect(res.body.error).toBe("not_implemented");
+  });
+
+  it("GET /oauth/authorize redirects in dev mode", async () => {
+    const app = await buildApp("development");
+    const res = await request(app)
+      .get("/oauth/authorize?redirect_uri=https://example.com/cb&state=xyz")
+      .redirects(0);
+    expect(res.status).toBe(302);
+    expect(res.headers.location).toContain("code=vibe-dev-code");
+    expect(res.headers.location).toContain("state=xyz");
+  });
+});
+
+describe("router — OAuth discovery metadata", () => {
+  afterEach(() => vi.resetModules());
+
+  it("GET /.well-known/oauth-protected-resource is always available", async () => {
+    const app = await buildApp("production");
+    const res = await request(app).get("/.well-known/oauth-protected-resource");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("resource");
+    expect(res.body).toHaveProperty("authorization_servers");
+  });
+
+  it("GET /.well-known/oauth-authorization-server is always available", async () => {
+    const app = await buildApp("production");
+    const res = await request(app).get("/.well-known/oauth-authorization-server");
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty("token_endpoint");
+    expect(res.body).toHaveProperty("authorization_endpoint");
+  });
+});
+
+describe("router — /mcp auth gate", () => {
+  afterEach(() => vi.resetModules());
+
+  it("POST /mcp returns 501 in production (disabled until real auth is implemented)", async () => {
+    const app = await buildApp("production");
+    const res = await request(app)
+      .post("/mcp")
+      .set("Content-Type", "application/json")
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+    expect(res.status).toBe(501);
+    expect(res.body.error).toBe("not_implemented");
+  });
+
+  it("POST /mcp returns 501 in production even with a Bearer token present", async () => {
+    const app = await buildApp("production");
+    const res = await request(app)
+      .post("/mcp")
+      .set("Content-Type", "application/json")
+      .set("Authorization", "Bearer some-token")
+      .send({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+    expect(res.status).toBe(501);
+    expect(res.body.error).toBe("not_implemented");
+  });
+});
