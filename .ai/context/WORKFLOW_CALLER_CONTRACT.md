@@ -8,7 +8,7 @@ Reference for the four reusable GitHub Actions workflows provided by vibe-framew
 
 **Ref:** `pmermel/vibe-framework/.github/workflows/reusable-preview.yml@v1`
 **Trigger:** `pull_request` events (`opened`, `synchronize`, `reopened`, `closed`)
-**GitHub Environment:** none (no approval gate; preview deploys without human intervention)
+**GitHub Environment:** `preview` (no approval gate; used to scope OIDC token subject and environment-scoped secrets — does not pause the workflow)
 **Concurrency:** One active deploy per PR; new pushes cancel the in-progress run.
 
 ### Inputs
@@ -82,7 +82,7 @@ jobs:
 
 **Ref:** `pmermel/vibe-framework/.github/workflows/reusable-staging.yml@v1`
 **Trigger:** Push to the staging branch (default: `develop`)
-**GitHub Environment:** none (no approval gate)
+**GitHub Environment:** `staging` (no approval gate; used to scope OIDC token subject and environment-scoped secrets — does not pause the workflow)
 
 ### Inputs
 
