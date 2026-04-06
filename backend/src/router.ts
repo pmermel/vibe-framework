@@ -18,7 +18,7 @@ import { createMcpServer } from "./lib/mcp-server.js";
  * - GET  /oauth/authorize — immediately issues a code (no user interaction)
  * - POST /oauth/token     — exchanges any code for a static dev token
  *
- * MCP endpoint (always mounted; requires Bearer token in production):
+ * Dev-mode only — /mcp (NODE_ENV !== "production"):
  * - POST /mcp   — StreamableHTTP MCP transport; tool list + tool call
  * - GET  /mcp   — SSE upgrade path used by some MCP clients
  * - DELETE /mcp — session teardown
@@ -28,10 +28,10 @@ import { createMcpServer } from "./lib/mcp-server.js";
  *   static dev token without validating credentials. The /mcp endpoint accepts
  *   any request. This is intentional for the Phase 2 MCP validation run.
  *
- *   In production, /oauth/authorize and /oauth/token return 501 Not Implemented.
- *   The /mcp endpoint requires an Authorization: Bearer header and rejects
- *   requests without one. Real token validation middleware must replace the
- *   placeholder check before the backend is exposed in production.
+ *   In production, /oauth/authorize, /oauth/token, and /mcp all return
+ *   501 Not Implemented. /mcp remains disabled until real token validation
+ *   is implemented — accepting arbitrary bearer tokens would expose privileged
+ *   actions (create_project, configure_repo, configure_cloud) to any caller.
  */
 export const router = Router();
 
@@ -126,8 +126,7 @@ router.post("/oauth/token", (req, res) => {
 
 // ---------------------------------------------------------------------------
 // MCP endpoint — StreamableHTTP transport, stateless (no sessions)
-// In production, requires Authorization: Bearer <token>. Token validation
-// is a placeholder — replace with real middleware before production use.
+// Dev-mode only. Returns 501 in production until real token validation exists.
 // ---------------------------------------------------------------------------
 
 async function handleMcp(
