@@ -69,5 +69,5 @@ body:
           required: true
         - label: GitHub App is installed and has repo-creation permissions
           required: true
-        - label: Azure Container Apps environment is provisioned
+        - label: Azure subscription is active and framework-level Azure resources are in place (resource group, ACR, shared Container Apps environment — provisioned once by `init.sh` / `setup-azure.sh`)
           required: true
