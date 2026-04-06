@@ -65,7 +65,9 @@ When all three `GITHUB_APP_*` variables are set, the backend uses GitHub App aut
 
 - The backend authenticates as the GitHub App, then exchanges the signed app JWT for an installation token.
 - Installation tokens are short-lived and must be minted on demand.
-- Repository automation must use installation tokens, not PATs.
+- **Production org-owned operations** (repo creation under an org, PR management, issue comments, branch protections) must use installation tokens.
+- **Development and CI** may use `GITHUB_TOKEN` (PAT or GitHub Actions token) as a fallback; `getGithubClient()` uses this path when the `GITHUB_APP_*` vars are absent or incomplete.
+- **User-owned repo creation** (`createForAuthenticatedUser`, `getAuthenticated`) is a known exception: installation tokens are app-scoped and cannot act as a specific user. This path requires a GitHub App user access token (user OAuth flow) or a PAT — not an installation token. `create_project` enforces this explicitly and fails with a clear error when App auth is active and a user owner is requested.
 - If the installation is missing, expired, or underscoped, bootstrap actions must fail clearly instead of falling back to weaker credentials.
 
 ## Failure Modes To Detect Early
