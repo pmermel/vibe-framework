@@ -81,7 +81,7 @@ describe("router — OAuth token endpoints", () => {
 });
 
 describe("router — OAuth discovery metadata", () => {
-  afterEach(() => vi.resetModules());
+  afterEach(() => { vi.resetModules(); });
 
   it("GET /.well-known/oauth-protected-resource is always available", async () => {
     const app = await buildApp("production");
@@ -101,7 +101,7 @@ describe("router — OAuth discovery metadata", () => {
 });
 
 describe("router — /mcp auth gate", () => {
-  afterEach(() => vi.resetModules());
+  afterEach(() => { vi.resetModules(); });
 
   it("POST /mcp returns 501 in production (disabled until real auth is implemented)", async () => {
     const app = await buildApp("production");
