@@ -37,6 +37,8 @@ export function generateNextjsScaffold(params: {
     "vibe.yaml": vibeYaml({ name, github_owner, azure_region, adapter, approvers, registryName, framework_repo }),
     "CLAUDE.md": claudeMd(name),
     "AGENTS.md": agentsMd(name),
+    ".ai/context/AZURE_TARGETS.md": aiContextAzureTargets({ name, github_owner, azure_region, registryName }),
+    ".ai/context/STACK_DECISIONS.md": aiContextStackDecisions(name),
     ".devcontainer/devcontainer.json": devcontainer(),
     ".github/workflows/preview.yml": previewWrapper({ name, registryName, framework_repo }),
     ".github/workflows/staging.yml": stagingWrapper({ name, registryName, framework_repo }),
@@ -181,6 +183,115 @@ Types: feat, fix, docs, chore, test, refactor
 
 ## Context
 See \`.ai/context/\` for conventions and stack decisions.
+`;
+}
+
+// ---------------------------------------------------------------------------
+// .ai/context files — shared conventions for both Claude and Codex agents
+// ---------------------------------------------------------------------------
+
+function aiContextAzureTargets(p: {
+  name: string;
+  github_owner: string;
+  azure_region: string;
+  registryName: string;
+}): string {
+  return `# Azure Targets — ${p.name}
+
+Project-specific Azure resource names and deployment targets. Agents must use these
+values when referencing or provisioning infrastructure for this project. Do not use
+framework-level resource names in project commands.
+
+## Resource Group
+
+| Resource | Name |
+|---|---|
+| Resource group | \`${p.name}-rg\` |
+| Region | \`${p.azure_region}\` |
+
+## Container Registry
+
+| Resource | Name |
+|---|---|
+| Azure Container Registry | \`${p.registryName}\` |
+| Login server | \`${p.registryName}.azurecr.io\` |
+
+## Container Apps
+
+| Resource | Name | Notes |
+|---|---|---|
+| Managed environment | \`${p.name}-env\` | Dedicated to this project |
+| Staging Container App | \`${p.name}-staging\` | Updated on push to \`develop\` |
+| Production Container App | \`${p.name}-prod\` | Updated on merge to \`main\` (approval required) |
+| Preview Container Apps | \`${p.name}-pr-<N>\` | Ephemeral per PR; deleted on close or TTL expiry |
+
+## GitHub Repository
+
+\`${p.github_owner}/${p.name}\`
+
+## OIDC Trust
+
+Each GitHub environment has its own Azure AD app registration and federated credential.
+The OIDC token subject must match exactly for Azure login to succeed.
+
+| GitHub Environment | OIDC Subject |
+|---|---|
+| \`preview\` | \`repo:${p.github_owner}/${p.name}:environment:preview\` |
+| \`staging\` | \`repo:${p.github_owner}/${p.name}:environment:staging\` |
+| \`production\` | \`repo:${p.github_owner}/${p.name}:environment:production\` |
+
+OIDC federated credentials are provisioned by \`infrastructure/oidc-federated-credential.bicep\`
+(called once per environment during \`configure_cloud\`). Secrets \`AZURE_CLIENT_ID\`,
+\`AZURE_TENANT_ID\`, and \`AZURE_SUBSCRIPTION_ID\` are stored per GitHub environment.
+`;
+}
+
+function aiContextStackDecisions(name: string): string {
+  return `# Stack Decisions — ${name}
+
+Records the technology choices made at project creation. Update this file when
+architectural decisions change.
+
+## Framework
+
+| Layer | Choice | Notes |
+|---|---|---|
+| Framework | [vibe-framework](https://github.com/pmermel/vibe-framework) | AI-agnostic; supports Claude Code and OpenAI Codex |
+| Template | Next.js (App Router) | TypeScript, standalone output for containerization |
+| Adapter | container-app | Azure Container Apps deployment model |
+
+## Frontend
+
+| Layer | Choice |
+|---|---|
+| Runtime | Node.js 20 |
+| Framework | Next.js 15 (App Router) |
+| Language | TypeScript |
+| Styling | None configured — add as needed |
+
+## Infrastructure
+
+| Layer | Choice | Notes |
+|---|---|---|
+| Hosting | Azure Container Apps | Consumption plan, scale to zero |
+| Registry | Azure Container Registry | System-assigned identity for pull auth |
+| CI/CD | GitHub Actions | Reusable workflows from vibe-framework |
+| Auth | OIDC (no long-lived secrets) | Per-environment federated credentials |
+| Secrets | GitHub environment secrets | Scoped to preview / staging / production |
+
+## Branch Model
+
+| Branch | Purpose |
+|---|---|
+| \`feature/*\` | Feature development — triggers preview deploy |
+| \`develop\` | Integration — triggers staging deploy |
+| \`main\` | Production — triggers production deploy (approval required) |
+
+## Conventions
+
+- Commit format: Conventional Commits (\`feat\`, \`fix\`, \`docs\`, \`chore\`, etc.)
+- Work queue: GitHub Issues
+- Context handoff: GitHub state (branch, PR, issue comments) — not session memory
 `;
 }
 
