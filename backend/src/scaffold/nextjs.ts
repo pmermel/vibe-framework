@@ -31,7 +31,6 @@ export function generateNextjsScaffold(params: {
 }): Record<string, string> {
   const { name, github_owner, azure_region, adapter, approvers, framework_repo } = params;
   const registryName = name.replace(/-/g, "") + "acr";
-  const [frameworkOwner] = framework_repo.split("/");
 
   return {
     "vibe.yaml": vibeYaml({ name, github_owner, azure_region, adapter, approvers, registryName, framework_repo }),
@@ -52,7 +51,7 @@ export function generateNextjsScaffold(params: {
     "src/app/page.tsx": page(name),
     "src/app/globals.css": globalsCss(),
     ".gitignore": gitignore(),
-    "README.md": readme({ name, github_owner, framework_repo: frameworkOwner }),
+    "README.md": readme({ name, github_owner, framework_repo }),
   };
 }
 
@@ -393,7 +392,7 @@ function ttlCleanupWrapper(p: { name: string; registryName: string; framework_re
   return `name: Preview TTL Cleanup
 on:
   schedule:
-    - cron: '0 3 * * 0'  # every Sunday at 03:00 UTC
+    - cron: '0 */6 * * *'  # every 6 hours — keeps abandoned previews within the 48-hour TTL
 
 jobs:
   ttl-cleanup:
@@ -403,7 +402,7 @@ jobs:
       preview_app_prefix: ${p.name}-pr
       registry: ${p.registryName}
       app_name: ${p.name}
-      max_age_days: 7
+      max_age_days: 2
     secrets: inherit
 `;
 }
