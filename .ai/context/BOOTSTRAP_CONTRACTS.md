@@ -20,6 +20,8 @@ These gates prevent the framework from expanding backend surface area faster tha
 
 1. **MCP connectivity gate**
    - Before broadening backend action implementation, prove that a live deployed backend can be invoked from both Codex and Claude through MCP using a low-risk action such as `post_status` or `capture_preview`.
+   - Direct curl checks against `/health` and `/action` are useful smoke tests, but they do not satisfy this gate by themselves.
+   - The passing condition is a real remote MCP server endpoint that both providers can register and invoke over standard MCP transport.
    - If either provider cannot invoke the backend reliably, treat that as an architecture blocker rather than continuing to add action implementations on assumption.
 2. **Walking skeleton gate**
    - Before completing all backend stubs, prove one complete vertical slice: `create_project` -> real repository -> bootstrap PR for the validated Next.js path.
@@ -57,15 +59,15 @@ GitHub App setup is a first-class bootstrap dependency, not a checklist bullet. 
 5. Enable and validate GitHub Codespaces for the framework repository.
 6. Provision shared Azure resource group and Container Apps environment.
 7. Deploy the minimal backend into the shared Container Apps environment.
-8. Expose the backend as an MCP-compatible endpoint.
-9. Register backend endpoint and auth in provider tool/connector settings, or generate manual registration instructions.
+8. Expose the backend as a real remote MCP server endpoint (for example `/mcp`) for provider access.
+9. Keep any REST action route only as a smoke-test/debug surface, then register the remote MCP endpoint and auth in provider tool/connector settings, or generate manual registration instructions.
 10. Configure GitHub Actions OIDC trust in Azure.
 11. Create framework-level GitHub environments, variables, and shared settings.
-12. Verify prerequisites: GitHub App auth, Azure login, OIDC trust, backend reachability, provider MCP connectivity.
+12. Verify prerequisites: GitHub App auth, Azure login, OIDC trust, backend reachability, remote MCP endpoint reachability, provider MCP connectivity.
 
 ### Success criteria
-- Backend is reachable at its MCP endpoint.
-- `create_project` can be invoked from a provider tool.
+- Backend is reachable at its remote MCP endpoint.
+- `create_project` can be invoked from a provider tool through the remote MCP endpoint.
 - GitHub Codespaces is enabled and usable for the framework repo.
 
 ---
@@ -171,7 +173,7 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 ### Responsibilities
 - Re-validate GitHub App auth and permissions.
 - Re-validate OIDC trust.
-- Re-validate backend MCP endpoint reachability.
+- Re-validate backend remote MCP endpoint reachability.
 - Re-validate Codespaces enablement for framework repo.
 - Re-apply framework-level GitHub settings if missing or misconfigured.
 
