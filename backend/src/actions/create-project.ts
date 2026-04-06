@@ -82,7 +82,9 @@ export async function createProject(params: Record<string, unknown>): Promise<un
     // Installation tokens (GitHub App production auth) are issued to the app, not to a
     // user, so they cannot call createForAuthenticatedUser or getAuthenticated. Fail
     // clearly rather than letting those calls return a confusing 403 or wrong-user result.
-    if (process.env.GITHUB_APP_INSTALLATION_ID) {
+    // Mirror the exact three-var condition used by getGithubClient() so partial/misconfigured
+    // App env vars (with a valid GITHUB_TOKEN fallback) do not incorrectly block this path.
+    if (process.env.GITHUB_APP_ID && process.env.GITHUB_APP_PRIVATE_KEY && process.env.GITHUB_APP_INSTALLATION_ID) {
       throw new Error(
         `github_owner "${config.github_owner}" is a User, but the backend is configured ` +
           `with GitHub App installation auth (GITHUB_APP_INSTALLATION_ID is set). ` +

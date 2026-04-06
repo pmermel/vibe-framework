@@ -342,7 +342,9 @@ describe("createProject — App installation auth guard", () => {
     process.env = originalEnv;
   });
 
-  it("throws when GITHUB_APP_INSTALLATION_ID is set and owner is a User", async () => {
+  it("throws when all three GITHUB_APP_* vars are set and owner is a User", async () => {
+    process.env.GITHUB_APP_ID = "42";
+    process.env.GITHUB_APP_PRIVATE_KEY = "pem";
     process.env.GITHUB_APP_INSTALLATION_ID = "1001";
 
     await expect(
@@ -355,9 +357,27 @@ describe("createProject — App installation auth guard", () => {
     ).rejects.toThrow("Installation tokens are app-scoped and cannot create user-owned repositories");
   });
 
-  it("does not throw the App auth guard for org owners even when GITHUB_APP_INSTALLATION_ID is set", async () => {
+  it("does not throw when only GITHUB_APP_INSTALLATION_ID is set (partial config, PAT fallback active)", async () => {
+    // Only one of the three App vars is present — getGithubClient() falls back to GITHUB_TOKEN.
+    // The guard must not fire in this case.
     process.env.GITHUB_APP_INSTALLATION_ID = "1001";
-    // Override to org path
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    setupHappyPath("User");
+
+    const result = await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+    expect(result).toHaveProperty("repo_url");
+  });
+
+  it("does not throw the App auth guard for org owners even when all three GITHUB_APP_* vars are set", async () => {
+    process.env.GITHUB_APP_ID = "42";
+    process.env.GITHUB_APP_PRIVATE_KEY = "pem";
+    process.env.GITHUB_APP_INSTALLATION_ID = "1001";
     mockOctokit.users.getByUsername.mockResolvedValue({ data: { type: "Organization" } });
     setupHappyPath("Organization");
 
