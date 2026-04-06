@@ -21,6 +21,8 @@ These gates prevent the framework from expanding backend surface area faster tha
 1. **MCP connectivity gate**
    - Before broadening backend action implementation, prove that a live deployed backend can be invoked from both Codex and Claude through MCP using a low-risk action such as `post_status` or `capture_preview`.
    - If either provider cannot invoke the backend reliably, treat that as an architecture blocker rather than continuing to add action implementations on assumption.
+   - Full validation procedure: `.ai/context/MCP_VALIDATION_RUNBOOK.md`
+   - Results recorded on GitHub issue #56; go/no-go decision required before expanding beyond the walking skeleton.
 2. **Walking skeleton gate**
    - Before completing all backend stubs, prove one complete vertical slice: `create_project` -> real repository -> bootstrap PR for the validated Next.js path.
    - The first proof may defer full Azure provisioning, but the GitHub flow must be real and observable entirely through GitHub state.
