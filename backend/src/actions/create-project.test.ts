@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createProject } from "./create-project.js";
 
 // ---------------------------------------------------------------------------
@@ -321,5 +321,53 @@ describe("createProject — invalid params", () => {
         adapter: "serverless",
       })
     ).rejects.toThrow("Invalid params:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: GitHub App installation auth guard for user-owned repos
+// ---------------------------------------------------------------------------
+
+describe("createProject — App installation auth guard", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env = { ...originalEnv };
+    // Set up owner as User so the guard path is reached
+    mockOctokit.users.getByUsername.mockResolvedValue({ data: { type: "User" } });
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it("throws when GITHUB_APP_INSTALLATION_ID is set and owner is a User", async () => {
+    process.env.GITHUB_APP_INSTALLATION_ID = "1001";
+
+    await expect(
+      createProject({
+        name: "my-app",
+        template: "nextjs",
+        github_owner: "acme",
+        approvers: ["alice"],
+      })
+    ).rejects.toThrow("Installation tokens are app-scoped and cannot create user-owned repositories");
+  });
+
+  it("does not throw the App auth guard for org owners even when GITHUB_APP_INSTALLATION_ID is set", async () => {
+    process.env.GITHUB_APP_INSTALLATION_ID = "1001";
+    // Override to org path
+    mockOctokit.users.getByUsername.mockResolvedValue({ data: { type: "Organization" } });
+    setupHappyPath("Organization");
+
+    // Should succeed — guard is user-path only
+    const result = await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+    });
+    expect(result).toHaveProperty("repo_url");
   });
 });
