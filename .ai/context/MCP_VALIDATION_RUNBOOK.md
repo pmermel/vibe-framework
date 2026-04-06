@@ -91,11 +91,14 @@ Add to `~/.claude.json` or `.claude.json` in the project root under `mcpServers`
   "mcpServers": {
     "vibe-backend": {
       "type": "http",
-      "url": "<BASE_URL>"
+      "url": "<BASE_URL>/mcp"
     }
   }
 }
 ```
+
+> ⚠️ The MCP transport is mounted at `/mcp`, not the root. Register `<BASE_URL>/mcp`,
+> not just `<BASE_URL>`.
 
 Restart Claude Code. The server will go through the OAuth discovery flow:
 1. Claude Code fetches `<BASE_URL>/.well-known/oauth-protected-resource`
@@ -120,9 +123,12 @@ and confirm it surfaces the error message from the backend.
 ## Step 4 — Register with Codex
 
 Follow the Codex MCP connector registration flow for your environment. Provide:
-- **Endpoint:** `<BASE_URL>`
+- **Endpoint:** `<BASE_URL>/mcp`
 - **Transport:** HTTP (StreamableHTTP)
 - **Auth:** OAuth 2.0 — the backend auto-issues a dev token at `/oauth/token`
+
+> ⚠️ Register `<BASE_URL>/mcp`, not just `<BASE_URL>`. The MCP transport is at `/mcp`;
+> the root only serves discovery and OAuth endpoints.
 
 Use the same canonical payload as Step 3 with `message: "MCP validation from Codex"`.
 
@@ -135,7 +141,7 @@ Post a comment on issue #56 with this template:
 ```
 ## MCP Validation Results
 
-**Endpoint:** <BASE_URL>
+**Endpoint:** <BASE_URL>/mcp
 **Deploy method:** localtunnel / Docker / ACA
 **Backend version:** <git SHA>
 **Auth:** OAuth dev stubs (temporary — no real credential validation)
