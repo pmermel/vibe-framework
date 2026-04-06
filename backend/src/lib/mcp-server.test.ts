@@ -3,6 +3,7 @@ import express from "express";
 import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer, TOOLS } from "./mcp-server.js";
+import { postStatus } from "../actions/post-status.js";
 
 // Mock all action modules so tests never make real API calls
 vi.mock("../actions/bootstrap-framework.js", () => ({
@@ -223,21 +224,25 @@ describe("MCP endpoint — tools/call", () => {
     expect(result?.content[0].text).toMatch(/Unknown tool/);
   });
 
-  it("returns isError:true when action throws (invalid params)", async () => {
+  it("returns isError:true when the action handler throws", async () => {
+    // Override the postStatus mock to throw so we actually exercise the error path
+    vi.mocked(postStatus).mockRejectedValueOnce(
+      new Error("Invalid params: pr_number is required")
+    );
+
     const { status, data } = await mcpPost({
       jsonrpc: "2.0",
       id: 5,
       method: "tools/call",
       params: {
         name: "post_status",
-        // missing required fields — postStatus will throw "Invalid params: ..."
-        arguments: { github_repo: "bad" },
+        arguments: { github_repo: "bad" }, // intentionally missing required fields
       },
     });
 
-    // postStatus mock resolves regardless; check that result still comes back
     expect(status).toBe(200);
-    const result = (data as { result?: unknown }).result;
-    expect(result).toBeDefined();
+    const result = (data as { result?: { isError: boolean; content: { text: string }[] } }).result;
+    expect(result?.isError).toBe(true);
+    expect(result?.content[0].text).toMatch(/Invalid params/);
   });
 });
