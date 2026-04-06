@@ -4,12 +4,21 @@ import { Octokit } from "@octokit/rest";
  * getGithubClient
  *
  * Returns an authenticated Octokit instance using the GITHUB_TOKEN environment
- * variable. In production the token comes from GitHub App installation token
- * minting (see .ai/context/GITHUB_APP_SETUP.md). For the walking skeleton and
- * local testing a personal access token with `repo` scope is sufficient.
+ * variable.
  *
- * Does NOT mint GitHub App installation tokens — that is deferred to the GitHub
- * App setup sub-flow tracked in issue #57.
+ * **Token type requirements by operation:**
+ * - Org-owned repos (`createInOrg`): a GitHub App installation token works.
+ * - User-owned repos (`createForAuthenticatedUser`, `getAuthenticated`):
+ *   requires a GitHub App *user* access token (obtained via the user OAuth flow)
+ *   or a personal access token (PAT) with `repo` scope. Installation tokens are
+ *   issued to the app, not to a user, so they will not work for user-owned repo
+ *   creation.
+ *
+ * For the walking skeleton and local development, a PAT with `repo` scope is
+ * the simplest choice. Full GitHub App user auth is deferred to issue #57.
+ *
+ * Does NOT mint tokens — callers are responsible for providing the correct token
+ * type for the operations they intend to perform.
  *
  * @throws if GITHUB_TOKEN is not set.
  */
@@ -18,8 +27,8 @@ export function getGithubClient(): Octokit {
   if (!token) {
     throw new Error(
       "GITHUB_TOKEN environment variable is required. " +
-      "Set it to a personal access token (repo scope) for local use, " +
-      "or a GitHub App installation token in production."
+      "For org-owned repos use a GitHub App installation token. " +
+      "For user-owned repos use a GitHub App user access token or a PAT with repo scope."
     );
   }
   return new Octokit({ auth: token });

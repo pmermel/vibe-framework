@@ -86,9 +86,11 @@ export async function createProject(params: Record<string, unknown>): Promise<un
     if (authUser.data.login !== config.github_owner) {
       throw new Error(
         `github_owner "${config.github_owner}" does not match the authenticated user ` +
-          `"${authUser.data.login}". To create a repo under a different user, use an ` +
-          `installation token for that account. To create under an org, ensure the owner ` +
-          `is an Organization (detected as User).`
+          `"${authUser.data.login}". User-owned repos require a GitHub App user access ` +
+          `token (via the user OAuth flow) or a PAT — not an installation token, which ` +
+          `is issued to the app and cannot act as a specific user. ` +
+          `To create a repo under an org instead, ensure the owner is an Organization ` +
+          `(currently detected as User).`
       );
     }
     createRepoResponse = await octokit.repos.createForAuthenticatedUser({
