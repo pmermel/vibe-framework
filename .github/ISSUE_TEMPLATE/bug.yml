@@ -1,0 +1,62 @@
+name: Bug report
+description: Report something that is broken or behaving incorrectly.
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template when something is broken or not working as expected.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What went wrong? Be specific.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: journey
+    attributes:
+      label: Affected journey
+      description: |
+        Which journey in `.ai/context/USE_CASES.md` is broken?
+        (Journey 1 – Bootstrap, 2 – Create Project, 3 – Adopt Repo, 4 – Feature Dev, 5 – Cross-Agent Handoff, 6 – Promotion)
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Branch, provider (Claude / Codex / other), relevant run or PR link.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or screenshots
+      description: Paste error output, backend logs, or GitHub Actions links here.
