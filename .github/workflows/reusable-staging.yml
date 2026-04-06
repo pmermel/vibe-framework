@@ -64,6 +64,12 @@ jobs:
   deploy:
     name: Deploy staging
     runs-on: ubuntu-latest
+    # environment: staging scopes the OIDC token subject to
+    # repo:<owner>/<repo>:environment:staging, matching the federated credential
+    # created by infrastructure/oidc-federated-credential.bicep for this environment.
+    # It also makes AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID
+    # environment-scoped secrets available to this job.
+    environment: staging
     permissions:
       id-token: write  # required for OIDC token exchange with Azure
       contents: read
