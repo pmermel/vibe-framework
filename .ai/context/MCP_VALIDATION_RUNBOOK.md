@@ -3,101 +3,196 @@
 This runbook records the current MCP validation status for `vibe-framework` and the
 steps required to close the validation gate in `plan.md` and `BOOTSTRAP_CONTRACTS.md`.
 
-## Current Finding
+## Current Status
 
-- Direct internet reachability of the backend REST app has been proven with:
-  - `GET /health`
-  - `POST /action`
-- That direct REST proof is useful, but it is **not** sufficient to satisfy the
-  provider-facing MCP contract.
-- The current provider-facing path is a **NO-GO** because the backend does not yet
-  expose a real remote MCP server endpoint. Registering the raw REST app URL with
-  a provider is not the canonical interface and must not be treated as a passing MCP
-  validation.
+- ✅ Direct REST reachability proven (`GET /health`, `POST /action`)
+- ✅ `/mcp` endpoint implemented (issue #66) — `POST /mcp` handles MCP
+  StreamableHTTP transport; all 8 actions are registered as tools
+- ✅ OAuth discovery stubs in place so provider auth handshake completes
+- 🔲 Provider validation: Claude Code → `/mcp` not yet run
+- 🔲 Provider validation: Codex → `/mcp` not yet run
 
-## Contract Clarification
+---
 
-- The canonical provider-facing interface is a remote MCP server endpoint, such as
-  `/mcp`, using the standard MCP transport expected by both Claude and Codex.
-- The existing REST `POST /action` route is a smoke-test and local-debugging surface.
-- Direct curl checks against `/health` and `/action` are still valuable because they:
-  - prove the backend process is reachable
-  - prove action dispatch and validation work
-  - isolate transport/protocol issues from action implementation issues
-- Direct curl checks against `/health` and `/action` do **not** prove that a provider
-  can discover tools, negotiate transport, and invoke the backend through MCP.
+## Step 1 — Start the backend and expose it publicly
 
-## Current Validation Status
+**Terminal 1 — start the backend**
 
-### Direct REST smoke tests
+```bash
+cd /path/to/vibe-framework/backend
+GITHUB_TOKEN=dummy npm run dev
+```
 
-These checks are valid today and should continue to pass:
+**Terminal 2 — tunnel (no ngrok or Docker required)**
+
+```bash
+npx localtunnel --port 8080
+```
+
+Note the `https://<id>.loca.lt` URL as `<BASE_URL>`.
+
+---
+
+## Step 2 — Verify the backend directly
+
+All three checks must pass before involving providers.
+
+### Health check
 
 ```bash
 curl -s <BASE_URL>/health
 ```
 
-Expected:
+Expected: `{"status":"ok"}`
 
-```json
-{"status":"ok"}
-```
+### MCP tools/list
 
 ```bash
-curl -s -X POST <BASE_URL>/action \
+curl -s -X POST <BASE_URL>/mcp \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+Expected HTTP 200 with SSE body containing a `result.tools` array of 8 tools.
+
+### MCP tools/call — post_status
+
+```bash
+curl -s -X POST <BASE_URL>/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
   -d '{
-    "action": "post_status",
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
     "params": {
-      "github_repo": "pmermel/vibe-framework",
-      "pr_number": 65,
-      "status": "pending",
-      "message": "MCP validation — direct REST smoke test"
+      "name": "post_status",
+      "arguments": {
+        "github_repo": "pmermel/vibe-framework",
+        "pr_number": 66,
+        "status": "pending",
+        "message": "MCP validation — direct curl probe"
+      }
     }
   }'
 ```
 
-Expected HTTP 200:
+Expected: HTTP 200, `result.content[0].text` contains JSON with `"posted": false`.
+
+---
+
+## Step 3 — Register with Claude Code
+
+Add to `~/.claude.json` or `.claude.json` in the project root under `mcpServers`:
 
 ```json
 {
-  "ok": true,
-  "result": {
-    "github_repo": "pmermel/vibe-framework",
-    "pr_number": 65,
-    "status": "pending",
-    "posted": false
+  "mcpServers": {
+    "vibe-backend": {
+      "type": "http",
+      "url": "<BASE_URL>"
+    }
   }
 }
 ```
 
-An invalid request should still return HTTP 400.
+Restart Claude Code. The server will go through the OAuth discovery flow:
+1. Claude Code fetches `<BASE_URL>/.well-known/oauth-protected-resource`
+2. Claude Code fetches `<BASE_URL>/.well-known/oauth-authorization-server`
+3. Claude Code opens the authorize URL in a browser — the dev stub immediately
+   redirects with a code, no user interaction needed beyond the browser opening
+4. Claude Code exchanges the code at `/oauth/token` and receives `vibe-dev-token`
+5. Status should change to authenticated
 
-### Provider MCP validation
+Once authenticated, ask Claude to call `post_status`:
 
-Current status: **blocked**
+> Call the vibe-backend post_status tool with github_repo "pmermel/vibe-framework",
+> pr_number 66, status "pending", message "MCP validation from Claude Code"
 
-Reason:
+Expected: `posted: false`, `status: "pending"`.
 
-- The backend does not yet expose a real remote MCP endpoint for tool discovery and
-  tool invocation over standard MCP transport.
-- Provider registration must target that remote MCP server endpoint once implemented.
-- Do not register the raw REST application URL as a passing MCP integration.
+Also test an error path — ask Claude to call post_status with missing required fields
+and confirm it surfaces the error message from the backend.
 
-## Exit Criteria For Issue #56
+---
 
-Issue `#56` is not complete until all of the following are true:
+## Step 4 — Register with Codex
 
-- A real remote MCP server endpoint exists and is internet-reachable.
-- Claude can register that endpoint, list tools, and call `post_status`.
-- Codex can register that same endpoint, list tools, and call `post_status`.
-- The results and any provider-specific caveats are documented in GitHub.
+Follow the Codex MCP connector registration flow for your environment. Provide:
+- **Endpoint:** `<BASE_URL>`
+- **Transport:** HTTP (StreamableHTTP)
+- **Auth:** OAuth 2.0 — the backend auto-issues a dev token at `/oauth/token`
 
-## After `/mcp` Exists
+Use the same canonical payload as Step 3 with `message: "MCP validation from Codex"`.
 
-When the remote MCP server endpoint is implemented, update this runbook with:
+---
 
-- the canonical remote endpoint path
-- provider registration instructions for Claude and Codex
-- a shared `post_status` validation payload for both providers
-- expected success and failure outputs through MCP, not just direct REST
+## Step 5 — Record results on GitHub issue #56
+
+Post a comment on issue #56 with this template:
+
+```
+## MCP Validation Results
+
+**Endpoint:** <BASE_URL>
+**Deploy method:** localtunnel / Docker / ACA
+**Backend version:** <git SHA>
+**Auth:** OAuth dev stubs (temporary — no real credential validation)
+
+### Direct curl
+- [ ] GET /health → 200
+- [ ] POST /mcp tools/list → 200, 8 tools
+- [ ] POST /mcp tools/call post_status → 200, posted:false
+
+### Claude Code
+- [ ] OAuth discovery + auth completed
+- [ ] tools/list returns all 8 tools
+- [ ] post_status call succeeds (posted:false)
+- [ ] Error path (invalid params) surfaced correctly
+- [ ] Provider-specific caveats: <none / describe>
+
+### Codex
+- [ ] OAuth discovery + auth completed
+- [ ] tools/list returns all 8 tools
+- [ ] post_status call succeeds (posted:false)
+- [ ] Error path (invalid params) surfaced correctly
+- [ ] Provider-specific caveats: <none / describe>
+
+### Go/No-Go
+- [ ] **GO** — both providers invoke /mcp reliably; expand action surface area
+- [ ] **NO-GO** — blocker found: <describe>
+```
+
+---
+
+## OAuth note
+
+The OAuth endpoints (`/oauth/authorize`, `/oauth/token`,
+`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`)
+are **development stubs only**. They issue a static `vibe-dev-token` without validating
+any credentials. Real auth middleware must be added before the backend is exposed
+beyond local/tunnel validation runs.
+
+---
+
+## Teardown
+
+- Stop the localtunnel process (`Ctrl-C`)
+- Stop the backend process (`Ctrl-C`)
+- Remove or disable the MCP server registration in both providers
+- Post results to issue #56
+
+---
+
+## REST smoke-test reference (still valid)
+
+```bash
+# Health
+curl -s <BASE_URL>/health
+
+# Direct action (bypasses MCP transport)
+curl -s -X POST <BASE_URL>/action \
+  -H "Content-Type: application/json" \
+  -d '{"action":"post_status","params":{"github_repo":"pmermel/vibe-framework","pr_number":66,"status":"pending","message":"direct REST smoke test"}}'
+```
