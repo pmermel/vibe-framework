@@ -59,6 +59,8 @@ The v1 design is provider-native and GitHub-centered:
   - asset generation and artifact storage when needed
 - The backend does not need to own the day-to-day coding loop in v1.
 - GitHub Actions are the canonical owner of preview deployment in v1; the backend only enriches the PR with screenshots, status, and related metadata after workflow-driven deploys complete.
+- The provider-facing backend interface in v1 must be a real remote MCP server endpoint using the standard transport expected by Claude and Codex.
+- The existing REST `POST /action` route may remain for direct smoke tests and local debugging, but it is not by itself sufficient for provider MCP registration and is not the canonical provider-facing interface.
 - Full provider-neutral remote coding execution remains a v2 expansion path if native provider execution proves too limiting.
 
 ### Cross-agent coordination
@@ -161,6 +163,8 @@ approvers:
 - `capture_preview` requires a headless browser runtime in the backend container, such as Playwright or Puppeteer, and that dependency must be accounted for in the backend image, runtime sizing, and Phase 1 scope.
 - `generate_assets` in v1 is limited to practical project assets needed for web delivery and review, such as app icons, favicons, Open Graph images, placeholder marketing graphics, and screenshot artifacts attached to PRs.
 - Promotion is GitHub-owned in v1. The backend may assist by posting status or preparing metadata, but it is not the canonical owner of release transitions and does not autonomously promote changes across environments.
+- The canonical provider-facing contract is a remote MCP server endpoint, such as `/mcp`, exposing these actions as provider-neutral tools over standard MCP transport.
+- The REST `POST /action` route is a non-canonical smoke-test surface. It may be used for direct curl checks and local debugging, but provider registration must target the remote MCP server endpoint instead.
 - Provider-specific instruction files such as `CLAUDE.md` and `AGENTS.md` may guide behavior, but they must not carry canonical project config.
 
 ## Bootstrap And Project Lifecycle
@@ -174,11 +178,12 @@ approvers:
   - enable and validate GitHub Codespaces for the framework repository so Claude can use a remote workspace without local machine setup
   - provision the shared Azure resource group and Container Apps environment
   - deploy the minimal backend into the shared Azure Container Apps environment
-  - expose the minimal backend as an MCP-compatible endpoint for provider tool access
-  - register the backend endpoint URL and auth configuration in the provider-specific tool or connector settings for Codex and Claude, or generate the manual registration instructions if automatic registration is not available
+  - expose the minimal backend as a real remote MCP server endpoint for provider tool access
+  - keep any REST action route only as a smoke-test/debug surface rather than the canonical provider-facing interface
+  - register the remote MCP endpoint URL and auth configuration in the provider-specific tool or connector settings for Codex and Claude, or generate the manual registration instructions if automatic registration is not available
   - configure GitHub Actions OIDC trust in Azure
   - create the framework-level shared settings needed for project generation, such as the framework repo environments, framework repo variables, and any org-level configuration that can be safely reused across project repos
-  - verify that shared prerequisites are functional before project generation begins, including GitHub App auth, Azure login, OIDC trust, backend reachability, and provider MCP connectivity
+  - verify that shared prerequisites are functional before project generation begins, including GitHub App auth, Azure login, OIDC trust, backend reachability, remote MCP endpoint reachability, and provider MCP connectivity
 - The first framework bootstrap must be triggered by `init.sh` or another external shell-capable setup path, because the backend does not exist until that bootstrap completes.
 - `bootstrap_framework` may exist only as a post-bootstrap backend action for reconfiguration, validation, or repair after the backend has already been deployed.
 - The GitHub App setup sub-flow is documented separately in `.ai/context/GITHUB_APP_SETUP.md` because it is a core bootstrap dependency rather than an implementation detail.
@@ -253,7 +258,7 @@ approvers:
 - Document the GitHub App setup sub-flow as a first-class bootstrap dependency rather than a checklist bullet.
 - Add GitHub issue templates for feature work, bug fixes, project creation, and project import.
 - Add a PR template covering linked issue, provider/run id, preview URL, screenshots, handoff notes, and validation checklist.
-- Validate live MCP invocation of a low-risk backend action such as `post_status` or `capture_preview` from both Codex and Claude before broadening backend action implementation.
+- Validate live remote MCP invocation of a low-risk backend action such as `post_status` or `capture_preview` from both Codex and Claude before broadening backend action implementation.
 - Implement preview lifecycle controls in the reusable workflows, including preview cleanup on PR close or merge, preview TTL enforcement, and per-project concurrency limits for active previews driven by `vibe.yaml` defaults.
 - Add Azure Bicep for Container Apps, OIDC, and optional Static Web Apps adapter resources.
 
@@ -283,7 +288,7 @@ approvers:
 ## Test Plan
 - Bootstrap the framework itself on a fresh GitHub account and Azure subscription and verify GitHub App, OIDC, and shared Azure resources are configured correctly.
 - Verify framework bootstrap enables and validates GitHub Codespaces for the framework repository.
-- Verify a fresh phone-only ChatGPT/Codex or Claude session can discover and invoke the backend MCP tools, including `create_project`, after framework bootstrap.
+- Verify a fresh phone-only ChatGPT/Codex or Claude session can discover and invoke the backend MCP tools, including `create_project`, through the remote MCP server endpoint after framework bootstrap.
 - Create a brand-new project through `init.sh` and verify repo creation, manifest generation, GitHub setup, and Azure provisioning.
 - Create a brand-new project through the provider-tool-triggered bootstrap path without using a local shell and verify it reaches the same configured state as the `init.sh` path.
 - Import an existing GitHub repo and verify framework adoption happens through a bootstrap PR rather than direct default-branch changes.

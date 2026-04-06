@@ -30,11 +30,11 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 4. The bootstrap flow provisions the shared Azure resource group and shared Container Apps environment for framework infrastructure.
 5. The bootstrap flow deploys the minimal backend into that shared framework environment.
 6. The bootstrap flow configures GitHub Actions OIDC trust in Azure.
-7. The bootstrap flow exposes the backend as an MCP-compatible endpoint and registers that endpoint for Codex and Claude, or outputs manual registration instructions if automation is unavailable.
+7. The bootstrap flow exposes the backend as a real remote MCP server endpoint and registers that endpoint for Codex and Claude, or outputs manual registration instructions if automation is unavailable.
 8. The bootstrap flow enables and validates GitHub Codespaces for the framework repository.
 
 ### Success outcome
-- The backend is reachable.
+- The backend is reachable through its provider-facing remote MCP server endpoint.
 - GitHub App and Azure prerequisites are valid.
 - The framework repo is ready for provider-tool-driven project bootstrap.
 
@@ -95,7 +95,7 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 - Never rewrite or directly modify the default branch during adoption.
 - Avoid unrelated app refactors.
 - Only make application-code changes when required for deployability, and keep them clearly visible in the bootstrap PR.
-- This journey assumes the GitHub App, Azure trust, and backend MCP endpoint already exist from the bootstrap tier.
+- This journey assumes the GitHub App, Azure trust, and backend remote MCP endpoint already exist from the bootstrap tier.
 
 ## Journey 4 — Implement A Feature Through Issue To Branch To PR To Preview
 
