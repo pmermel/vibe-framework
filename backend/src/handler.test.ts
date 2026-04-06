@@ -11,7 +11,10 @@ vi.mock("./actions/bootstrap-framework.js", () => ({
 // Mocked so create_project dispatch tests never make real GitHub API calls.
 vi.mock("./lib/github-client.js", () => ({
   getGithubClient: () => ({
-    users: { getByUsername: vi.fn().mockResolvedValue({ data: { type: "User" } }) },
+    users: {
+      getByUsername: vi.fn().mockResolvedValue({ data: { type: "User" } }),
+      getAuthenticated: vi.fn().mockResolvedValue({ data: { login: "acme" } }),
+    },
     repos: {
       createForAuthenticatedUser: vi.fn().mockResolvedValue({
         data: { html_url: "https://github.com/acme/my-app", default_branch: "main" },
@@ -20,6 +23,7 @@ vi.mock("./lib/github-client.js", () => ({
     },
     git: {
       getRef: vi.fn().mockResolvedValue({ data: { object: { sha: "abc" } } }),
+      getCommit: vi.fn().mockResolvedValue({ data: { tree: { sha: "tree-abc" } } }),
       createBlob: vi.fn().mockResolvedValue({ data: { sha: "blob" } }),
       createTree: vi.fn().mockResolvedValue({ data: { sha: "tree" } }),
       createCommit: vi.fn().mockResolvedValue({ data: { sha: "commit" } }),

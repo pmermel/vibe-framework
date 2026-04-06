@@ -79,6 +79,18 @@ export async function createProject(params: Record<string, unknown>): Promise<un
       auto_init: true,
     });
   } else {
+    // For user-owned repos, createForAuthenticatedUser creates under the token's user.
+    // Validate that the token user matches the requested github_owner so we don't
+    // silently create the repo in the wrong account.
+    const authUser = await octokit.users.getAuthenticated();
+    if (authUser.data.login !== config.github_owner) {
+      throw new Error(
+        `github_owner "${config.github_owner}" does not match the authenticated user ` +
+          `"${authUser.data.login}". To create a repo under a different user, use an ` +
+          `installation token for that account. To create under an org, ensure the owner ` +
+          `is an Organization (detected as User).`
+      );
+    }
     createRepoResponse = await octokit.repos.createForAuthenticatedUser({
       name: config.name,
       private: false,
@@ -89,13 +101,22 @@ export async function createProject(params: Record<string, unknown>): Promise<un
   const repoUrl = createRepoResponse.data.html_url;
   const defaultBranch = createRepoResponse.data.default_branch ?? "main";
 
-  // Get the SHA of the tip of the default branch
+  // Get the commit SHA at the tip of the default branch
   const refResponse = await octokit.git.getRef({
     owner: config.github_owner,
     repo: config.name,
     ref: `heads/${defaultBranch}`,
   });
-  const baseSha = refResponse.data.object.sha;
+  const baseSha = refResponse.data.object.sha; // commit SHA — used as parent
+
+  // Fetch the tree SHA for the base commit.
+  // git.createTree({ base_tree }) expects a tree SHA, not a commit SHA.
+  const baseCommit = await octokit.git.getCommit({
+    owner: config.github_owner,
+    repo: config.name,
+    commit_sha: baseSha,
+  });
+  const baseTreeSha = baseCommit.data.tree.sha;
 
   // Generate scaffold files
   const scaffoldFiles = generateNextjsScaffold({
@@ -125,11 +146,11 @@ export async function createProject(params: Record<string, unknown>): Promise<un
     })
   );
 
-  // Create a new git tree on top of the base commit
+  // Create a new git tree on top of the base tree (tree SHA, not commit SHA)
   const treeResponse = await octokit.git.createTree({
     owner: config.github_owner,
     repo: config.name,
-    base_tree: baseSha,
+    base_tree: baseTreeSha,
     tree: treeItems,
   });
 

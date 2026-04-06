@@ -8,6 +8,7 @@ import { createProject } from "./create-project.js";
 const mockOctokit = {
   users: {
     getByUsername: vi.fn(),
+    getAuthenticated: vi.fn(),
   },
   repos: {
     createInOrg: vi.fn(),
@@ -15,6 +16,7 @@ const mockOctokit = {
   },
   git: {
     getRef: vi.fn(),
+    getCommit: vi.fn(),
     createBlob: vi.fn(),
     createTree: vi.fn(),
     createCommit: vi.fn(),
@@ -33,8 +35,9 @@ vi.mock("../lib/github-client.js", () => ({
 // Helpers
 // ---------------------------------------------------------------------------
 
-function setupHappyPath(ownerType: "User" | "Organization" = "User") {
+function setupHappyPath(ownerType: "User" | "Organization" = "User", login = "acme") {
   mockOctokit.users.getByUsername.mockResolvedValue({ data: { type: ownerType } });
+  mockOctokit.users.getAuthenticated.mockResolvedValue({ data: { login } });
 
   const createRepoMock = {
     data: {
@@ -46,7 +49,11 @@ function setupHappyPath(ownerType: "User" | "Organization" = "User") {
   mockOctokit.repos.createInOrg.mockResolvedValue(createRepoMock);
 
   mockOctokit.git.getRef.mockResolvedValue({
-    data: { object: { sha: "abc123" } },
+    data: { object: { sha: "commit-abc123" } },
+  });
+
+  mockOctokit.git.getCommit.mockResolvedValue({
+    data: { tree: { sha: "tree-abc123" } },
   });
 
   // Return a unique sha per blob call so tree items have distinct shas
@@ -151,6 +158,50 @@ describe("createProject — nextjs happy path (user owner)", () => {
 
     expect(mockOctokit.repos.createForAuthenticatedUser).toHaveBeenCalled();
     expect(mockOctokit.repos.createInOrg).not.toHaveBeenCalled();
+  });
+
+  it("passes tree SHA (not commit SHA) as base_tree to createTree", async () => {
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+
+    // getRef returns commit SHA; getCommit returns tree SHA; createTree must receive tree SHA
+    expect(mockOctokit.git.getCommit).toHaveBeenCalledWith(
+      expect.objectContaining({ commit_sha: "commit-abc123" })
+    );
+    expect(mockOctokit.git.createTree).toHaveBeenCalledWith(
+      expect.objectContaining({ base_tree: "tree-abc123" })
+    );
+  });
+
+  it("passes commit SHA (not tree SHA) as parent to createCommit", async () => {
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+
+    expect(mockOctokit.git.createCommit).toHaveBeenCalledWith(
+      expect.objectContaining({ parents: ["commit-abc123"] })
+    );
+  });
+
+  it("throws when authenticated user does not match github_owner", async () => {
+    // Override getAuthenticated to return a different login
+    mockOctokit.users.getAuthenticated.mockResolvedValue({ data: { login: "other-user" } });
+
+    await expect(
+      createProject({
+        name: "my-app",
+        template: "nextjs",
+        github_owner: "acme",
+        approvers: ["alice"],
+      })
+    ).rejects.toThrow('github_owner "acme" does not match the authenticated user "other-user"');
   });
 });
 
