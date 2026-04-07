@@ -125,8 +125,9 @@ const TOOLS = [
     name: "configure_repo",
     description:
       "Apply GitHub repository settings: branch protections, labels, environments " +
-      "(preview/staging/production), Azure OIDC secrets, and required status checks. " +
-      "Does NOT create repos or provision Azure resources.",
+      "(preview/staging/production), and Azure OIDC secrets. " +
+      "Does NOT configure required status checks (CI check names are only known after " +
+      "bootstrap workflows are added). Does NOT create repos or provision Azure resources.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -148,6 +149,18 @@ const TOOLS = [
         production_branch: {
           type: "string",
           description: "Branch that triggers production deploys (default: main)",
+        },
+        azure_client_id: {
+          type: "string",
+          description: "Azure OIDC client ID output from configure_cloud",
+        },
+        azure_tenant_id: {
+          type: "string",
+          description: "Azure tenant ID output from configure_cloud",
+        },
+        azure_subscription_id: {
+          type: "string",
+          description: "Azure subscription ID output from configure_cloud",
         },
       },
       required: ["github_repo", "approvers"],

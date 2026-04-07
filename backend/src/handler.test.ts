@@ -20,6 +20,11 @@ vi.mock("./lib/github-client.js", () => ({
         data: { html_url: "https://github.com/acme/my-app", default_branch: "main" },
       }),
       createInOrg: vi.fn(),
+      updateBranchProtection: vi.fn().mockResolvedValue({}),
+      createOrUpdateEnvironment: vi.fn().mockResolvedValue({}),
+    },
+    issues: {
+      createLabel: vi.fn().mockResolvedValue({}),
     },
     git: {
       getRef: vi.fn().mockResolvedValue({ data: { object: { sha: "abc" } } }),
