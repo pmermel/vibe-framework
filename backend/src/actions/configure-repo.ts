@@ -52,8 +52,9 @@ async function encryptSecret(publicKey: string, secretValue: string): Promise<st
  *
  * Applies GitHub repository settings required for the vibe-framework pipeline:
  * - Branch protections on `production_branch` (default: `main`) and `staging_branch`
- *   (default: `develop`): require PR + 1 approval, dismiss stale reviews, require
- *   branches to be up to date before merging.
+ *   (default: `develop`): require PR + 1 approval, dismiss stale reviews. Note: strict
+ *   up-to-date enforcement requires status checks, which are not configured here (see
+ *   "Does NOT" below).
  * - GitHub environments: `preview`, `staging`, `production`. The `production` environment
  *   gets required reviewers set to the provided `approvers` list.
  * - Standard issue labels (`phase-2`, `phase-3`, `phase-4`, `feat`, `fix`, `chore`,
