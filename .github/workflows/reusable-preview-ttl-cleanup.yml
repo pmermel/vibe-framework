@@ -65,6 +65,7 @@ jobs:
   cleanup-stale-previews:
     name: Delete stale preview Container Apps
     runs-on: ubuntu-latest
+    environment: preview     # OIDC subject → environment:preview; must be here, not in the caller
     permissions:
       id-token: write  # required for OIDC token exchange with Azure
       contents: read
