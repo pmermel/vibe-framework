@@ -34,7 +34,7 @@ async function buildApp(nodeEnv: string) {
   vi.resetModules();
   const { router } = await import("./router.js");
   const app = express();
-  app.set("trust proxy", true);
+  app.set("trust proxy", 1);
   app.use(express.json());
   app.use(router);
   return app;
