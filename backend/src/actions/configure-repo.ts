@@ -1,4 +1,5 @@
 import { z } from "zod";
+import _sodium from "libsodium-wrappers";
 import { getGithubClient } from "../lib/github-client.js";
 
 const ConfigureRepoParams = z.object({
@@ -6,6 +7,9 @@ const ConfigureRepoParams = z.object({
   approvers: z.array(z.string()).min(1),
   staging_branch: z.string().default("develop"),
   production_branch: z.string().default("main"),
+  azure_client_id: z.string().optional(),
+  azure_tenant_id: z.string().optional(),
+  azure_subscription_id: z.string().optional(),
 });
 
 /** Standard labels to create on the target repository. */
@@ -25,6 +29,25 @@ const STANDARD_LABELS: Array<{ name: string; color: string; description: string 
 const ENVIRONMENTS = ["preview", "staging", "production"] as const;
 
 /**
+ * encryptSecret
+ *
+ * Encrypts a secret value using the repository's public key so it can be
+ * stored via the GitHub Actions secrets API.
+ *
+ * @param publicKey - Base64-encoded repository public key from GitHub API.
+ * @param secretValue - Plaintext secret value to encrypt.
+ * @returns Base64-encoded encrypted value suitable for the secrets API.
+ */
+async function encryptSecret(publicKey: string, secretValue: string): Promise<string> {
+  await _sodium.ready;
+  const sodium = _sodium;
+  const keyBytes = Buffer.from(publicKey, "base64");
+  const secretBytes = Buffer.from(secretValue, "utf8");
+  const encrypted = sodium.crypto_box_seal(secretBytes, keyBytes);
+  return Buffer.from(encrypted).toString("base64");
+}
+
+/**
  * configureRepo
  *
  * Applies GitHub repository settings required for the vibe-framework pipeline:
@@ -35,20 +58,26 @@ const ENVIRONMENTS = ["preview", "staging", "production"] as const;
  *   gets required reviewers set to the provided `approvers` list.
  * - Standard issue labels (`phase-2`, `phase-3`, `phase-4`, `feat`, `fix`, `chore`,
  *   `infra`, `test`, `docs`) — skipped gracefully if they already exist.
+ * - Sets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` as environment
+ *   secrets on all three environments if all three `azure_*` params are provided.
  *
  * Does NOT create or modify source code in the repository.
  * Does NOT provision Azure resources — use `configure_cloud` for that.
  * Does NOT create, merge, or close pull requests.
- * Does NOT configure OIDC secrets or Azure environment variables.
  *
  * @param params - Must match `ConfigureRepoParams` schema:
  *   - `github_repo` (string, required, `owner/repo` format)
  *   - `approvers` (string[], required, min 1 — GitHub usernames for production gate)
  *   - `staging_branch` (string, optional, default `"develop"`)
  *   - `production_branch` (string, optional, default `"main"`)
- * @returns `{ configured: true, repo, branch_protections, environments, labels_created }`
+ *   - `azure_client_id` (string, optional) — OIDC client ID output from `configure_cloud`
+ *   - `azure_tenant_id` (string, optional) — Azure tenant ID output from `configure_cloud`
+ *   - `azure_subscription_id` (string, optional) — Azure subscription ID output from `configure_cloud`
+ * @returns `{ configured: true, repo, branch_protections, environments, labels_created, azure_secrets_configured }`
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  * @throws GitHub API errors if branch protection or environment operations fail.
+ * @throws GitHub API errors if any approver username cannot be resolved — fails closed
+ *         rather than silently producing an approval gate with fewer reviewers than intended.
  */
 export async function configureRepo(params: Record<string, unknown>): Promise<unknown> {
   const parsed = ConfigureRepoParams.safeParse(params);
@@ -93,15 +122,12 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
   // --- GitHub environments ---
   // Resolve approver user IDs for the production environment required reviewers.
   // The environments API accepts user IDs, not usernames.
+  // Any failed lookup propagates as an error — fail closed rather than silently
+  // producing an approval gate with fewer reviewers than intended.
   const approverIds: number[] = [];
   for (const username of config.approvers) {
-    try {
-      const userResponse = await octokit.users.getByUsername({ username });
-      approverIds.push(userResponse.data.id);
-    } catch {
-      // If the user doesn't exist, skip them rather than failing the entire operation.
-      // The caller should validate approver usernames before calling this action.
-    }
+    const userResponse = await octokit.users.getByUsername({ username });
+    approverIds.push(userResponse.data.id);
   }
 
   for (const env of ENVIRONMENTS) {
@@ -117,6 +143,40 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     }
 
     await octokit.repos.createOrUpdateEnvironment(envPayload);
+  }
+
+  // --- Azure OIDC secrets ---
+  // If all three Azure identity params are provided, encrypt and store them as
+  // environment secrets on every environment so workflows can authenticate via OIDC.
+  const azureSecretsConfigured =
+    config.azure_client_id !== undefined &&
+    config.azure_tenant_id !== undefined &&
+    config.azure_subscription_id !== undefined;
+
+  if (azureSecretsConfigured) {
+    // Fetch the repo's public key once — needed to encrypt each secret before upload.
+    const publicKeyResponse = await octokit.actions.getRepoPublicKey({ owner, repo });
+    const { key: publicKey, key_id } = publicKeyResponse.data;
+
+    const azureSecrets: Record<string, string> = {
+      AZURE_CLIENT_ID: config.azure_client_id!,
+      AZURE_TENANT_ID: config.azure_tenant_id!,
+      AZURE_SUBSCRIPTION_ID: config.azure_subscription_id!,
+    };
+
+    for (const env of ENVIRONMENTS) {
+      for (const [secret_name, secret_value] of Object.entries(azureSecrets)) {
+        const encrypted_value = await encryptSecret(publicKey, secret_value);
+        await octokit.actions.createOrUpdateEnvironmentSecret({
+          owner,
+          repo,
+          environment_name: env,
+          secret_name,
+          encrypted_value,
+          key_id,
+        });
+      }
+    }
   }
 
   // --- Issue labels ---
@@ -147,5 +207,6 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     branch_protections: protectedBranches,
     environments: [...ENVIRONMENTS],
     labels_created: labelsCreated,
+    azure_secrets_configured: azureSecretsConfigured,
   };
 }

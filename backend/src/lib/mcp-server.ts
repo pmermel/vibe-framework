@@ -149,6 +149,18 @@ const TOOLS = [
           type: "string",
           description: "Branch that triggers production deploys (default: main)",
         },
+        azure_client_id: {
+          type: "string",
+          description: "Azure OIDC client ID output from configure_cloud",
+        },
+        azure_tenant_id: {
+          type: "string",
+          description: "Azure tenant ID output from configure_cloud",
+        },
+        azure_subscription_id: {
+          type: "string",
+          description: "Azure subscription ID output from configure_cloud",
+        },
       },
       required: ["github_repo", "approvers"],
       additionalProperties: false,

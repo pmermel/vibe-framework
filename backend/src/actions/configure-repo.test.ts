@@ -8,6 +8,15 @@ vi.mock("../lib/github-client.js", () => ({
   getGithubClient: vi.fn(),
 }));
 
+// Mock libsodium-wrappers so tests don't perform real crypto. The encryption
+// helper is a pure transport concern; tests verify the API call flow instead.
+vi.mock("libsodium-wrappers", () => ({
+  default: {
+    ready: Promise.resolve(),
+    crypto_box_seal: vi.fn(() => new Uint8Array(48)),
+  },
+}));
+
 import { configureRepo } from "./configure-repo.js";
 import { getGithubClient } from "../lib/github-client.js";
 
@@ -26,6 +35,12 @@ function makeMockOctokit(overrides: Record<string, unknown> = {}) {
     },
     issues: {
       createLabel: vi.fn().mockResolvedValue({}),
+    },
+    actions: {
+      getRepoPublicKey: vi.fn().mockResolvedValue({
+        data: { key: "fake-b64-key", key_id: "key123" },
+      }),
+      createOrUpdateEnvironmentSecret: vi.fn().mockResolvedValue({}),
     },
     ...overrides,
   };
@@ -112,6 +127,15 @@ describe("configureRepo — valid params", () => {
     });
 
     expect(result).toMatchObject({ configured: true });
+  });
+
+  it("returns azure_secrets_configured: false when no azure_* params provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+    })) as { azure_secrets_configured: boolean };
+
+    expect(result.azure_secrets_configured).toBe(false);
   });
 });
 
@@ -269,16 +293,120 @@ describe("configureRepo — environment creation", () => {
     expect(mockOctokit.users.getByUsername).toHaveBeenCalledWith({ username: "alice" });
   });
 
-  it("skips approver gracefully if user lookup fails", async () => {
+  it("throws if an approver username cannot be resolved (fail closed)", async () => {
     mockOctokit.users.getByUsername = vi.fn().mockRejectedValue({ status: 404 });
 
-    // Should not throw — just skips that approver
-    const result = await configureRepo({
+    // Must throw — silently skipping would produce fewer reviewers than intended.
+    await expect(
+      configureRepo({
+        github_repo: "owner/my-app",
+        approvers: ["nonexistent"],
+      })
+    ).rejects.toMatchObject({ status: 404 });
+  });
+});
+
+describe("configureRepo — Azure OIDC secrets", () => {
+  let mockOctokit: ReturnType<typeof makeMockOctokit>;
+
+  beforeEach(() => {
+    mockOctokit = makeMockOctokit();
+    (getGithubClient as ReturnType<typeof vi.fn>).mockReturnValue(mockOctokit);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sets Azure secrets on all three environments when all three azure_* params provided", async () => {
+    const result = (await configureRepo({
       github_repo: "owner/my-app",
-      approvers: ["nonexistent"],
+      approvers: ["alice"],
+      azure_client_id: "client-id-123",
+      azure_tenant_id: "tenant-id-456",
+      azure_subscription_id: "sub-id-789",
+    })) as { azure_secrets_configured: boolean };
+
+    expect(result.azure_secrets_configured).toBe(true);
+
+    // 3 environments × 3 secrets = 9 calls
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).toHaveBeenCalledTimes(9);
+  });
+
+  it("fetches the repo public key exactly once when azure_* params provided", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_id: "client-id-123",
+      azure_tenant_id: "tenant-id-456",
+      azure_subscription_id: "sub-id-789",
     });
 
-    expect(result).toMatchObject({ configured: true });
+    expect(mockOctokit.actions.getRepoPublicKey).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.actions.getRepoPublicKey).toHaveBeenCalledWith({
+      owner: "owner",
+      repo: "my-app",
+    });
+  });
+
+  it("passes owner and repo to createOrUpdateEnvironmentSecret", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_id: "client-id-123",
+      azure_tenant_id: "tenant-id-456",
+      azure_subscription_id: "sub-id-789",
+    });
+
+    const calls = mockOctokit.actions.createOrUpdateEnvironmentSecret.mock.calls as Array<
+      [{ owner: string; repo: string }]
+    >;
+    for (const [args] of calls) {
+      expect(args.owner).toBe("owner");
+      expect(args.repo).toBe("my-app");
+    }
+  });
+
+  it("sets AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID on the production environment", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_id: "client-id-123",
+      azure_tenant_id: "tenant-id-456",
+      azure_subscription_id: "sub-id-789",
+    });
+
+    const calls = mockOctokit.actions.createOrUpdateEnvironmentSecret.mock.calls as Array<
+      [{ environment_name: string; secret_name: string }]
+    >;
+    const productionCalls = calls.filter(([args]) => args.environment_name === "production");
+    const secretNames = productionCalls.map(([args]) => args.secret_name);
+    expect(secretNames).toContain("AZURE_CLIENT_ID");
+    expect(secretNames).toContain("AZURE_TENANT_ID");
+    expect(secretNames).toContain("AZURE_SUBSCRIPTION_ID");
+  });
+
+  it("does not call secret APIs when azure_* params are absent", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+    })) as { azure_secrets_configured: boolean };
+
+    expect(result.azure_secrets_configured).toBe(false);
+    expect(mockOctokit.actions.getRepoPublicKey).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).not.toHaveBeenCalled();
+  });
+
+  it("does not call secret APIs when only some azure_* params are provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_id: "client-id-123",
+      // azure_tenant_id and azure_subscription_id omitted
+    })) as { azure_secrets_configured: boolean };
+
+    expect(result.azure_secrets_configured).toBe(false);
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).not.toHaveBeenCalled();
   });
 });
 
