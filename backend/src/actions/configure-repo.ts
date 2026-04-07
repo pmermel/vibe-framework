@@ -64,6 +64,8 @@ async function encryptSecret(publicKey: string, secretValue: string): Promise<st
  * Does NOT create or modify source code in the repository.
  * Does NOT provision Azure resources — use `configure_cloud` for that.
  * Does NOT create, merge, or close pull requests.
+ * Does NOT configure required status checks — check names depend on the CI workflows
+ *   added after bootstrap, which are not known at bootstrap time.
  *
  * @param params - Must match `ConfigureRepoParams` schema:
  *   - `github_repo` (string, required, `owner/repo` format)
@@ -106,9 +108,8 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     allow_deletions: false,
     block_creations: false,
     required_conversation_resolution: false,
-    // Require branches to be up to date before merging (strict mode requires status checks).
-    // Since we're not enforcing status checks here, we leave required_status_checks null
-    // and rely on the UI / future configuration to enable strict mode when checks are added.
+    // required_status_checks is intentionally null — CI check names are only known after
+    // the bootstrap workflows are added to the repository, so they cannot be configured here.
   };
 
   const protectedBranches = [config.production_branch, config.staging_branch];
