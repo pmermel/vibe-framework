@@ -41,6 +41,23 @@ export const router = Router();
 
 const isDevMode = process.env.NODE_ENV !== "production";
 
+/**
+ * deriveBaseUrl
+ *
+ * Returns the external-facing base URL for this request, respecting
+ * X-Forwarded-Proto and X-Forwarded-Host headers when trust proxy is enabled.
+ *
+ * Does NOT read req directly — callers pass already-resolved values so this
+ * function is independently unit-testable without an HTTP server.
+ *
+ * @param protocol - req.protocol (already resolved by Express trust-proxy logic)
+ * @param host - req.get("host") (already resolved by Express trust-proxy logic)
+ * @returns Full base URL string, e.g. "https://example.loca.lt"
+ */
+export function deriveBaseUrl(protocol: string, host: string): string {
+  return `${protocol}://${host}`;
+}
+
 // ---------------------------------------------------------------------------
 // Health check — always available
 // ---------------------------------------------------------------------------
@@ -60,7 +77,7 @@ router.post("/action", handleAction);
 // ---------------------------------------------------------------------------
 
 router.get("/.well-known/oauth-protected-resource", (req, res) => {
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = deriveBaseUrl(req.protocol, req.get("host") ?? "localhost");
   res.json({
     resource: base,
     authorization_servers: [base],
@@ -68,7 +85,7 @@ router.get("/.well-known/oauth-protected-resource", (req, res) => {
 });
 
 router.get("/.well-known/oauth-authorization-server", (req, res) => {
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = deriveBaseUrl(req.protocol, req.get("host") ?? "localhost");
   res.json({
     issuer: base,
     authorization_endpoint: `${base}/oauth/authorize`,
