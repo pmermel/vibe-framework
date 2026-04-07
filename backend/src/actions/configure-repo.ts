@@ -154,26 +154,30 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     config.azure_subscription_id !== undefined;
 
   if (azureSecretsConfigured) {
-    // Fetch the repo's public key once — needed to encrypt each secret before upload.
-    const publicKeyResponse = await octokit.actions.getRepoPublicKey({ owner, repo });
-    const { key: publicKey, key_id } = publicKeyResponse.data;
-
-    const azureSecrets: Record<string, string> = {
-      AZURE_CLIENT_ID: config.azure_client_id!,
-      AZURE_TENANT_ID: config.azure_tenant_id!,
-      AZURE_SUBSCRIPTION_ID: config.azure_subscription_id!,
-    };
+    // Each GitHub environment has its own public key — the repo-level key cannot
+    // be used to encrypt environment secrets.  Fetch each environment's key
+    // separately so the encrypted values are accepted by the real GitHub API.
+    const azureSecretEntries: Array<[string, string]> = [
+      ["AZURE_CLIENT_ID", config.azure_client_id!],
+      ["AZURE_TENANT_ID", config.azure_tenant_id!],
+      ["AZURE_SUBSCRIPTION_ID", config.azure_subscription_id!],
+    ];
 
     for (const env of ENVIRONMENTS) {
-      for (const [secret_name, secret_value] of Object.entries(azureSecrets)) {
-        const encrypted_value = await encryptSecret(publicKey, secret_value);
+      const { data: pubKey } = await octokit.actions.getEnvironmentPublicKey({
+        owner,
+        repo,
+        environment_name: env,
+      });
+      for (const [secret_name, secret_value] of azureSecretEntries) {
+        const encrypted_value = await encryptSecret(pubKey.key, secret_value);
         await octokit.actions.createOrUpdateEnvironmentSecret({
           owner,
           repo,
           environment_name: env,
           secret_name,
           encrypted_value,
-          key_id,
+          key_id: pubKey.key_id,
         });
       }
     }

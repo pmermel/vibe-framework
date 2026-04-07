@@ -37,7 +37,7 @@ function makeMockOctokit(overrides: Record<string, unknown> = {}) {
       createLabel: vi.fn().mockResolvedValue({}),
     },
     actions: {
-      getRepoPublicKey: vi.fn().mockResolvedValue({
+      getEnvironmentPublicKey: vi.fn().mockResolvedValue({
         data: { key: "fake-b64-key", key_id: "key123" },
       }),
       createOrUpdateEnvironmentSecret: vi.fn().mockResolvedValue({}),
@@ -333,7 +333,7 @@ describe("configureRepo — Azure OIDC secrets", () => {
     expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).toHaveBeenCalledTimes(9);
   });
 
-  it("fetches the repo public key exactly once when azure_* params provided", async () => {
+  it("fetches each environment's own public key (3 times) when azure_* params provided", async () => {
     await configureRepo({
       github_repo: "owner/my-app",
       approvers: ["alice"],
@@ -342,11 +342,15 @@ describe("configureRepo — Azure OIDC secrets", () => {
       azure_subscription_id: "sub-id-789",
     });
 
-    expect(mockOctokit.actions.getRepoPublicKey).toHaveBeenCalledTimes(1);
-    expect(mockOctokit.actions.getRepoPublicKey).toHaveBeenCalledWith({
-      owner: "owner",
-      repo: "my-app",
-    });
+    // One call per environment — the repo-level key cannot encrypt environment secrets
+    expect(mockOctokit.actions.getEnvironmentPublicKey).toHaveBeenCalledTimes(3);
+    for (const env of ["preview", "staging", "production"]) {
+      expect(mockOctokit.actions.getEnvironmentPublicKey).toHaveBeenCalledWith({
+        owner: "owner",
+        repo: "my-app",
+        environment_name: env,
+      });
+    }
   });
 
   it("passes owner and repo to createOrUpdateEnvironmentSecret", async () => {
@@ -393,7 +397,7 @@ describe("configureRepo — Azure OIDC secrets", () => {
     })) as { azure_secrets_configured: boolean };
 
     expect(result.azure_secrets_configured).toBe(false);
-    expect(mockOctokit.actions.getRepoPublicKey).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.getEnvironmentPublicKey).not.toHaveBeenCalled();
     expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).not.toHaveBeenCalled();
   });
 
