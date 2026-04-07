@@ -12,11 +12,13 @@ const ConfigureRepoParams = z.object({
  *
  * Applies GitHub repository settings required for the vibe-framework pipeline:
  * branch protections, labels, environments (preview / staging / production),
- * environment secrets for Azure OIDC, and required status checks.
+ * and environment secrets for Azure OIDC.
  *
  * Does NOT create or modify source code in the repository.
  * Does NOT provision Azure resources — use `configureCloud` for that.
  * Does NOT open or merge pull requests.
+ * Does NOT configure required status checks — check names depend on the CI workflows
+ *   added after bootstrap, which are not known at bootstrap time.
  *
  * @param params - Must match `ConfigureRepoParams` schema:
  *   - `github_repo` (string, required, `owner/repo` format)
@@ -37,7 +39,8 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
   // TODO: create labels (feature, fix, docs, infra, chore, phase-*)
   // TODO: create environments (preview, staging, production)
   // TODO: set environment secrets and variables for Azure OIDC
-  // TODO: configure required status checks
+  // NOTE: required_status_checks intentionally omitted — CI check names are defined
+  //   by workflows added after bootstrap and cannot be known at this stage.
   // TODO: set production environment manual approval requirement
   return { status: "not_implemented" };
 }
