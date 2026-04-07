@@ -34,6 +34,7 @@ async function buildApp(nodeEnv: string) {
   vi.resetModules();
   const { router } = await import("./router.js");
   const app = express();
+  app.set("trust proxy", true);
   app.use(express.json());
   app.use(router);
   return app;
@@ -97,6 +98,22 @@ describe("router — OAuth discovery metadata", () => {
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("token_endpoint");
     expect(res.body).toHaveProperty("authorization_endpoint");
+  });
+
+  it("GET /.well-known/oauth-authorization-server respects forwarded https", async () => {
+    const app = await buildApp("development");
+    const res = await request(app)
+      .get("/.well-known/oauth-authorization-server")
+      .set("Host", "tough-hornets-build.loca.lt")
+      .set("X-Forwarded-Proto", "https");
+    expect(res.status).toBe(200);
+    expect(res.body.issuer).toBe("https://tough-hornets-build.loca.lt");
+    expect(res.body.authorization_endpoint).toBe(
+      "https://tough-hornets-build.loca.lt/oauth/authorize"
+    );
+    expect(res.body.token_endpoint).toBe(
+      "https://tough-hornets-build.loca.lt/oauth/token"
+    );
   });
 });
 
