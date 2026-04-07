@@ -130,12 +130,24 @@ jobs:
             .
 
       - name: Enforce max_concurrent preview limit
-        # Count active preview Container Apps and delete the oldest if the
-        # max_concurrent limit is reached. This prevents unbounded preview
-        # accumulation and controls Azure costs. Runs only on first deploy
-        # for a PR (before any create); subsequent pushes to the same PR
-        # go through the update path and do not consume an additional slot.
+        # Only runs on first deploy for this PR (when no app exists yet).
+        # Subsequent pushes to the same PR update the existing app in place and
+        # do not consume a new slot — enforcement is skipped for those.
+        #
+        # When the limit is reached the oldest preview Container App is deleted
+        # along with its matching ACR image tag (pr-<N>) to avoid storage leaks.
         run: |
+          APP_NAME="${{ inputs.preview_app_prefix }}-${{ github.event.pull_request.number }}"
+
+          # Skip enforcement if this PR already has a preview app (update path).
+          if az containerapp show \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --output none 2>/dev/null; then
+            echo "Preview $APP_NAME already exists — skipping max_concurrent enforcement (update path)."
+            exit 0
+          fi
+
           ACTIVE=$(az containerapp list \
             --resource-group "${{ inputs.resource_group }}" \
             --query "[?starts_with(name, '${{ inputs.preview_app_prefix }}-')].{name:name, created:systemData.createdAt}" \
@@ -149,10 +161,26 @@ jobs:
           if [ "$COUNT" -ge "$MAX" ]; then
             OLDEST=$(echo "$ACTIVE" | jq -r 'sort_by(.created) | .[0].name')
             echo "Enforcing max_concurrent=$MAX: deleting oldest preview $OLDEST"
+
             az containerapp delete \
               --name "$OLDEST" \
               --resource-group "${{ inputs.resource_group }}" \
               --yes
+
+            # Derive PR number from app name (prefix-<N>) and delete the ACR image
+            # to prevent storage accumulation — app and image are always deleted together.
+            PR_NUMBER="${OLDEST#${{ inputs.preview_app_prefix }}-}"
+            IMAGE_TAG="pr-${PR_NUMBER}"
+            if az acr repository show-tags \
+                --name "${{ inputs.registry }}" \
+                --repository "${{ inputs.app_name }}" \
+                --output tsv 2>/dev/null | grep -q "^${IMAGE_TAG}$"; then
+              echo "Deleting ACR image: ${{ inputs.app_name }}:${IMAGE_TAG}"
+              az acr repository delete \
+                --name "${{ inputs.registry }}" \
+                --image "${{ inputs.app_name }}:${IMAGE_TAG}" \
+                --yes
+            fi
           fi
 
       - name: Create or update preview Container App
