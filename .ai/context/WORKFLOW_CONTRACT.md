@@ -326,7 +326,7 @@ jobs:
 **File:** `.github/workflows/reusable-preview-ttl-cleanup.yml`
 **Ref pattern:** `<framework-owner>/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@<tag>`
 **Trigger:** `schedule` — cron expression set by the caller; not driven by a PR event
-**GitHub Environment:** None — uses repository-level or caller-scoped secret resolution
+**GitHub Environment:** `preview` — uses the same OIDC credentials as the preview deploy workflow
 
 ### Inputs
 
@@ -344,15 +344,19 @@ To align with `vibe.yaml`, bootstrap automation converts `deploy.preview.ttl_hou
 
 ### Required Secrets
 
-These secrets must be available to the calling workflow. Because there is no GitHub environment on this workflow, they must be set as repository-level secrets or passed via `secrets: inherit` from a caller that has access.
-
 | Secret | Description |
 |---|---|
-| `AZURE_CLIENT_ID` | Client ID of a service principal with read+delete access to the resource group and ACR |
+| `AZURE_CLIENT_ID` | Client ID of the service principal for the `preview` environment — same credential used by the preview deploy workflow |
 | `AZURE_TENANT_ID` | Azure AD tenant ID |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
 
-The `AZURE_CLIENT_ID` used here is typically the `preview` environment service principal, which has Contributor access on the resource group. Using `secrets: inherit` from the `preview` environment is the recommended pattern.
+The TTL cleanup workflow runs in the `preview` GitHub environment so the OIDC subject matches `environment:preview` — the same trust scope used by the preview deploy workflow. Callers must use `secrets: inherit`; secrets are inherited from the `preview` environment context, not from the repository level. No separate credential path is needed.
+
+### Required GitHub Environment
+
+| Environment name | Approval gate | OIDC subject |
+|---|---|---|
+| `preview` | None | `repo:<owner>/<repo>:environment:preview` |
 
 ### Outputs
 
@@ -386,6 +390,7 @@ on:
 jobs:
   ttl-cleanup:
     uses: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
+    environment: preview
     with:
       resource_group: my-app-rg
       preview_app_prefix: my-app-pr
