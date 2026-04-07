@@ -52,6 +52,10 @@ on:
         description: "Port the container listens on"
         type: number
         default: 3000
+      max_concurrent:
+        description: "Maximum number of active preview Container Apps. When this limit is reached, the oldest preview is deleted before the new one is deployed."
+        type: number
+        default: 3
     secrets:
       AZURE_CLIENT_ID:
         required: true
@@ -124,6 +128,32 @@ jobs:
             --image "${{ inputs.app_name }}:pr-${{ github.event.pull_request.number }}" \
             --file "${{ inputs.dockerfile }}" \
             .
+
+      - name: Enforce max_concurrent preview limit
+        # Count active preview Container Apps and delete the oldest if the
+        # max_concurrent limit is reached. This prevents unbounded preview
+        # accumulation and controls Azure costs. Runs only on first deploy
+        # for a PR (before any create); subsequent pushes to the same PR
+        # go through the update path and do not consume an additional slot.
+        run: |
+          ACTIVE=$(az containerapp list \
+            --resource-group "${{ inputs.resource_group }}" \
+            --query "[?starts_with(name, '${{ inputs.preview_app_prefix }}-')].{name:name, created:systemData.createdAt}" \
+            --output json)
+
+          COUNT=$(echo "$ACTIVE" | jq 'length')
+          MAX="${{ inputs.max_concurrent }}"
+
+          echo "Active previews: $COUNT / $MAX"
+
+          if [ "$COUNT" -ge "$MAX" ]; then
+            OLDEST=$(echo "$ACTIVE" | jq -r 'sort_by(.created) | .[0].name')
+            echo "Enforcing max_concurrent=$MAX: deleting oldest preview $OLDEST"
+            az containerapp delete \
+              --name "$OLDEST" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --yes
+          fi
 
       - name: Create or update preview Container App
         # ACR pull auth contract (ref: issue #52):

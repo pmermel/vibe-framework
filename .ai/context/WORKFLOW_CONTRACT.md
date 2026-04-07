@@ -31,7 +31,7 @@ Bootstrap automation generates the thin wrapper files from `vibe.yaml`. The foll
 | `name` | All four wrappers — passed as `app_name` input |
 | `build.install` | All four wrappers — passed as `install_command` input (if non-default) |
 | `build.build` | All four wrappers — passed as `build_command` input (if non-default) |
-| `deploy.preview.max_concurrent` | Enforced by preview lifecycle logic (not yet wired to the workflow input in v1) |
+| `deploy.preview.max_concurrent` | Passed as `max_concurrent` to `reusable-preview.yml`; enforced before each new preview deploy |
 | `deploy.preview.ttl_hours` | Converted to days for `max_age_days` in TTL cleanup wrapper |
 | `branch_policy.staging` | Staging wrapper `on.push.branches` |
 | `branch_policy.production` | Production wrapper `on.push.branches` |
@@ -51,6 +51,7 @@ Callers (generated project wrappers) may set any workflow `input` declared by th
 | `install_command` | `npm ci` | Non-Node runtimes or monorepos |
 | `build_command` | `npm run build` | Custom build scripts |
 | `target_port` | `3000` | Non-standard application port (preview only) |
+| `max_concurrent` | `3` | Project-specific concurrent preview limit (preview only) |
 | `max_age_days` | `7` | Project-specific TTL cleanup schedule |
 
 Callers MAY adjust the `on:` trigger (e.g., branch name, cron schedule) so long as the trigger type matches the workflow contract below.
@@ -89,6 +90,7 @@ Callers MAY adjust the `on:` trigger (e.g., branch name, cron schedule) so long 
 | `install_command` | string | no | `npm ci` | Dependency install command |
 | `build_command` | string | no | `npm run build` | Application build command |
 | `target_port` | number | no | `3000` | Port the container listens on |
+| `max_concurrent` | number | no | `3` | Maximum number of active preview Container Apps. When this limit is reached, the oldest preview is deleted before the new one is deployed. Set from `vibe.yaml deploy.preview.max_concurrent`. |
 
 ### Required Secrets
 
