@@ -125,9 +125,8 @@ const TOOLS = [
     name: "configure_repo",
     description:
       "Apply GitHub repository settings: branch protections, labels, environments " +
-      "(preview/staging/production), and Azure OIDC secrets. " +
-      "Does NOT configure required status checks (CI check names are only known after " +
-      "bootstrap workflows are added). Does NOT create repos or provision Azure resources.",
+      "(preview/staging/production), Azure OIDC secrets, and required status checks. " +
+      "Does NOT create repos or provision Azure resources.",
     inputSchema: {
       type: "object" as const,
       properties: {
