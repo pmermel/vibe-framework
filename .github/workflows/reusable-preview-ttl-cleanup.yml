@@ -1,0 +1,127 @@
+name: "Reusable — Preview TTL Cleanup"
+# Called by generated project repos on a schedule to delete preview Container
+# Apps that were not cleaned up by PR close (e.g. abandoned branches, manually
+# closed PRs that bypassed the cleanup job).
+#
+# Cost control: Azure Container Apps uses consumption-based pricing.
+# Stale previews with min-replicas 0 cost nothing at rest, but ACR storage
+# and Container App configurations accumulate. This workflow removes both.
+#
+# Caller example (in generated project):
+#   on:
+#     schedule:
+#       - cron: '0 3 * * 0'  # every Sunday at 03:00 UTC
+#   jobs:
+#     ttl-cleanup:
+#       uses: pmermel/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
+#       with:
+#         resource_group: my-app-rg
+#         preview_app_prefix: my-app-pr
+#         registry: myappacr
+#         app_name: my-app
+#         max_age_days: 7
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      resource_group:
+        description: "Azure resource group to scan for stale preview Container Apps"
+        type: string
+        required: true
+      preview_app_prefix:
+        description: "Prefix used to identify preview Container Apps (e.g. my-app-pr)"
+        type: string
+        required: true
+      registry:
+        description: "Azure Container Registry name (without .azurecr.io) — stale PR images are also purged"
+        type: string
+        required: true
+      app_name:
+        description: "Project name — used to identify PR-tagged images in ACR"
+        type: string
+        required: true
+      max_age_days:
+        description: "Delete preview apps and images older than this many days (default: 7)"
+        type: number
+        default: 7
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # cleanup-stale-previews — lists all Container Apps in the resource group
+  # whose names start with the preview_app_prefix, checks their creation time,
+  # and deletes those older than max_age_days.
+  #
+  # Also purges matching ACR images (tagged pr-<N>) for deleted apps to avoid
+  # storage accumulation.
+  # ---------------------------------------------------------------------------
+  cleanup-stale-previews:
+    name: Delete stale preview Container Apps
+    runs-on: ubuntu-latest
+    environment: preview     # OIDC subject → environment:preview; must be here, not in the caller
+    permissions:
+      id-token: write  # required for OIDC token exchange with Azure
+      contents: read
+
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete stale preview Container Apps and ACR images
+        # Lists preview apps by prefix, checks creation timestamp, and deletes
+        # those older than max_age_days. For each deleted app, also removes the
+        # corresponding ACR image (pr-<N> tag) to free registry storage.
+        run: |
+          MAX_AGE_DAYS="${{ inputs.max_age_days }}"
+          CUTOFF=$(date -u -d "${MAX_AGE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v "-${MAX_AGE_DAYS}d" +%Y-%m-%dT%H:%M:%SZ)
+          echo "Deleting preview apps created before: $CUTOFF"
+
+          # Fetch all Container Apps in the resource group matching the prefix
+          APPS=$(az containerapp list \
+            --resource-group "${{ inputs.resource_group }}" \
+            --query "[?starts_with(name, '${{ inputs.preview_app_prefix }}-')].{name:name, created:systemData.createdAt}" \
+            --output json)
+
+          echo "$APPS" | jq -c '.[]' | while read -r app; do
+            NAME=$(echo "$app" | jq -r '.name')
+            CREATED=$(echo "$app" | jq -r '.created')
+
+            if [[ "$CREATED" < "$CUTOFF" ]]; then
+              echo "Deleting stale preview: $NAME (created: $CREATED)"
+
+              az containerapp delete \
+                --name "$NAME" \
+                --resource-group "${{ inputs.resource_group }}" \
+                --yes
+
+              # Derive PR number from app name (prefix-<pr_number>) and delete ACR image
+              PR_NUMBER="${NAME#${{ inputs.preview_app_prefix }}-}"
+              IMAGE_TAG="pr-${PR_NUMBER}"
+              if az acr repository show-tags \
+                  --name "${{ inputs.registry }}" \
+                  --repository "${{ inputs.app_name }}" \
+                  --output tsv 2>/dev/null | grep -q "^${IMAGE_TAG}$"; then
+                echo "Deleting ACR image: ${{ inputs.app_name }}:${IMAGE_TAG}"
+                az acr repository delete \
+                  --name "${{ inputs.registry }}" \
+                  --image "${{ inputs.app_name }}:${IMAGE_TAG}" \
+                  --yes
+              fi
+            else
+              echo "Keeping: $NAME (created: $CREATED)"
+            fi
+          done
+
+          echo "TTL cleanup complete."

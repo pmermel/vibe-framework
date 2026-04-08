@@ -8,7 +8,7 @@ Technology choices for the vibe-framework and generated projects.
 |---|---|---|
 | Language | TypeScript | Strict mode, ESM modules |
 | Runtime | Node.js 20 LTS | Required for Playwright |
-| Framework | Express (minimal) | Thin HTTP layer for MCP-compatible endpoints |
+| Framework | Express (minimal) | App host for health checks, smoke-test routes, and the provider-facing remote MCP transport layer |
 | Headless browser | Playwright | Required for `capture_preview` action |
 | Container | Docker | Multi-stage build; distroless or slim base |
 | Deploy | Azure Container Apps | Consumption plan; framework-scoped environment |
@@ -55,4 +55,5 @@ Technology choices for the vibe-framework and generated projects.
 
 - Phone-first: no tool or workflow step may require a local machine to be the only path.
 - Provider-neutral: no TypeScript, YAML, or shell file may import or assume a specific AI provider SDK.
+- Provider-facing backend connectivity must use a standard remote MCP server interface rather than a custom REST-only contract.
 - Cost-aware: preview environments must be ephemeral and cleaned up on PR close or TTL expiry.

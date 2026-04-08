@@ -51,7 +51,7 @@ OIDC federated credentials are created on the Azure service principal scoped to 
 
 - **Consumption plan** — scale to zero when idle; cost-efficient for preview environments.
 - **Preview TTL** — preview Container App revisions must be deactivated and removed when the PR is closed or merged, or after the configured TTL (default: 48 hours).
-- **Concurrency limit** — maximum active preview environments per project configurable in `vibe.yaml` (default: 5).
+- **Concurrency limit** — maximum active preview environments per project configurable in `vibe.yaml` (default: 3).
 - **Ingress** — external ingress enabled; HTTPS only.
 
 ## Static Web Apps Adapter

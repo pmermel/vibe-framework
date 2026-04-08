@@ -43,6 +43,8 @@ build:
 deploy:
   preview:
     target: container-app
+    max_concurrent: 3
+    ttl_hours: 48
   staging:
     target: container-app
   production:
@@ -54,6 +56,9 @@ deploy:
 azure:
   region: eastus2
   resource_group: vibe-framework-rg
+  # ACR name: alphanumeric only, globally unique, 5-50 chars.
+  # Convention: app name with hyphens removed + "acr" suffix.
+  registry: vibeframeworkacr
   container_app_environment: vibe-framework-env
   preview_app_prefix: vibe-framework-pr
   staging_app: vibe-framework-staging
@@ -69,6 +74,7 @@ github:
     preview: pmermel/vibe-framework/.github/workflows/reusable-preview.yml@v1
     staging: pmermel/vibe-framework/.github/workflows/reusable-staging.yml@v1
     production: pmermel/vibe-framework/.github/workflows/reusable-production.yml@v1
+    preview_ttl_cleanup: pmermel/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
 
 # GitHub usernames who can approve production deployments.
 approvers:

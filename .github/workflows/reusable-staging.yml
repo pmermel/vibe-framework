@@ -1,0 +1,128 @@
+name: "Reusable — Staging (Azure Container Apps)"
+# Called by thin wrapper workflows in generated project repos on push to the
+# staging branch (default: develop). Builds a container image and deploys it
+# to the stable staging Container App for the project.
+#
+# Caller example (in generated project):
+#   uses: pmermel/vibe-framework/.github/workflows/reusable-staging.yml@v1
+#   with:
+#     app_name: my-app
+#     resource_group: my-app-rg
+#     staging_app: my-app-staging
+#     registry: myappacr
+#   secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Project name — used for ACR image tags"
+        type: string
+        required: true
+      resource_group:
+        description: "Azure resource group containing the staging Container App"
+        type: string
+        required: true
+      staging_app:
+        description: "Name of the staging Container App"
+        type: string
+        required: true
+      registry:
+        description: "Azure Container Registry name (without .azurecr.io)"
+        type: string
+        required: true
+      dockerfile:
+        description: "Path to Dockerfile relative to repo root"
+        type: string
+        default: "./Dockerfile"
+      install_command:
+        description: "Dependency install command"
+        type: string
+        default: "npm ci"
+      build_command:
+        description: "Application build command"
+        type: string
+        default: "npm run build"
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+    outputs:
+      staging_url:
+        description: "HTTPS URL of the staging environment"
+        value: ${{ jobs.deploy.outputs.staging_url }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # deploy — triggered by every push to the staging branch.
+  # Builds the container image tagged :staging, pushes to ACR, then updates
+  # the long-lived staging Container App with the new image.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy staging
+    runs-on: ubuntu-latest
+    # environment: staging scopes the OIDC token subject to
+    # repo:<owner>/<repo>:environment:staging, matching the federated credential
+    # created by infrastructure/oidc-federated-credential.bicep for this environment.
+    # It also makes AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID
+    # environment-scoped secrets available to this job.
+    environment: staging
+    permissions:
+      id-token: write  # required for OIDC token exchange with Azure
+      contents: read
+    outputs:
+      staging_url: ${{ steps.get-url.outputs.staging_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Build application
+        run: ${{ inputs.build_command }}
+
+      - name: Azure login (OIDC)
+        # Authenticates using federated credentials — no long-lived secrets stored.
+        # Prerequisites: Azure AD app, federated credential, and RBAC roles set up
+        # by infrastructure/oidc-federated-credential.bicep.
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push staging image to ACR
+        # Image is tagged :staging — overwritten on every push to the staging branch.
+        run: |
+          az acr build \
+            --registry "${{ inputs.registry }}" \
+            --image "${{ inputs.app_name }}:staging" \
+            --file "${{ inputs.dockerfile }}" \
+            .
+
+      - name: Update staging Container App
+        # Updates the running image. The staging Container App must already exist;
+        # it is provisioned by infrastructure/container-apps-env.bicep during
+        # project bootstrap (create_project or import_project).
+        run: |
+          az containerapp update \
+            --name "${{ inputs.staging_app }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --image "${{ inputs.registry }}.azurecr.io/${{ inputs.app_name }}:staging"
+
+      - name: Get staging URL
+        id: get-url
+        run: |
+          FQDN=$(az containerapp show \
+            --name "${{ inputs.staging_app }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv)
+          echo "staging_url=https://$FQDN" >> "$GITHUB_OUTPUT"
+
+      - name: Print staging URL
+        run: echo "Staging deployed → ${{ steps.get-url.outputs.staging_url }}"

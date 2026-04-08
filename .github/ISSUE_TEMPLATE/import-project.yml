@@ -1,0 +1,63 @@
+name: Import project
+description: Adopt an existing repository into the vibe-framework via the import_project backend action.
+title: "feat(project): import "
+labels: ["import-project"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to trigger Journey 3 — Adopt An Existing Repo (see `.ai/context/USE_CASES.md`).
+
+        An agent will invoke the `import_project` backend action based on the details below. Bootstrap prerequisites (framework backend, GitHub App, Azure) must already be in place.
+
+        The backend will open a bootstrap PR in the target repo — it will not modify the default branch directly.
+
+  - type: input
+    id: repo
+    attributes:
+      label: Repository to import
+      description: Full `owner/repo` slug of the existing GitHub repository.
+      placeholder: "myorg/existing-repo"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Project description
+      description: What does this project do? This will be recorded in `vibe.yaml`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deploy_adapter
+    attributes:
+      label: Deploy adapter
+      options:
+        - container-app
+        - static-web-app
+
+  - type: textarea
+    id: app_changes
+    attributes:
+      label: Known application changes required for deployability
+      description: |
+        List any app-code changes (e.g., build script updates, port changes) that may be needed so the project can be deployed via GitHub Actions. These will appear in the bootstrap PR.
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Any other notes for the agent invoking `import_project`.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: Framework backend is deployed and reachable
+          required: true
+        - label: GitHub App is installed and has access to the target repository
+          required: true
+        - label: Azure subscription is active and framework-level Azure resources are in place (resource group, ACR, shared Container Apps environment — provisioned once by `init.sh` / `setup-azure.sh`)
+          required: true

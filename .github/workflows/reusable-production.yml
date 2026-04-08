@@ -1,0 +1,135 @@
+name: "Reusable — Production (Azure Container Apps)"
+# Called by thin wrapper workflows in generated project repos on push to the
+# production branch (default: main). Requires explicit approval via the
+# GitHub environment approval gate before the deploy job runs.
+#
+# The approval gate is configured on the GitHub repository environment named
+# "production". Required reviewers are set by bootstrap automation using
+# the `approvers` list from vibe.yaml.
+#
+# Caller example (in generated project):
+#   uses: pmermel/vibe-framework/.github/workflows/reusable-production.yml@v1
+#   with:
+#     app_name: my-app
+#     resource_group: my-app-rg
+#     production_app: my-app-prod
+#     registry: myappacr
+#   secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Project name — used for ACR image tags"
+        type: string
+        required: true
+      resource_group:
+        description: "Azure resource group containing the production Container App"
+        type: string
+        required: true
+      production_app:
+        description: "Name of the production Container App"
+        type: string
+        required: true
+      registry:
+        description: "Azure Container Registry name (without .azurecr.io)"
+        type: string
+        required: true
+      dockerfile:
+        description: "Path to Dockerfile relative to repo root"
+        type: string
+        default: "./Dockerfile"
+      install_command:
+        description: "Dependency install command"
+        type: string
+        default: "npm ci"
+      build_command:
+        description: "Application build command"
+        type: string
+        default: "npm run build"
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+    outputs:
+      production_url:
+        description: "HTTPS URL of the production environment"
+        value: ${{ jobs.deploy.outputs.production_url }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # deploy — triggered by push to the production branch, but PAUSED at the
+  # GitHub environment approval gate before any Azure commands run.
+  #
+  # The `environment: production` key is what creates the approval gate.
+  # GitHub will notify the required reviewers (from vibe.yaml `approvers`)
+  # and wait for approval before the job proceeds.
+  #
+  # Promotion is owned by GitHub — this workflow never initiates a release.
+  # It only deploys after a human has approved via GitHub's environment gate.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy production
+    runs-on: ubuntu-latest
+    environment: production  # approval gate — pauses here until a required reviewer approves
+    permissions:
+      id-token: write  # required for OIDC token exchange with Azure
+      contents: read
+    outputs:
+      production_url: ${{ steps.get-url.outputs.production_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Build application
+        run: ${{ inputs.build_command }}
+
+      - name: Azure login (OIDC)
+        # Authenticates using federated credentials — no long-lived secrets stored.
+        # Prerequisites: Azure AD app, federated credential, and RBAC roles set up
+        # by infrastructure/oidc-federated-credential.bicep.
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push production image to ACR
+        # Image is tagged :latest — overwritten on each approved production release.
+        # Staging image (:staging) is not promoted directly; a fresh build from
+        # main ensures the production image reflects exactly what was approved.
+        run: |
+          az acr build \
+            --registry "${{ inputs.registry }}" \
+            --image "${{ inputs.app_name }}:latest" \
+            --file "${{ inputs.dockerfile }}" \
+            .
+
+      - name: Update production Container App
+        # Updates the running image. The production Container App must already exist;
+        # it is provisioned by infrastructure/container-apps-env.bicep during
+        # project bootstrap (create_project or import_project).
+        run: |
+          az containerapp update \
+            --name "${{ inputs.production_app }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --image "${{ inputs.registry }}.azurecr.io/${{ inputs.app_name }}:latest"
+
+      - name: Get production URL
+        id: get-url
+        run: |
+          FQDN=$(az containerapp show \
+            --name "${{ inputs.production_app }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --query "properties.configuration.ingress.fqdn" \
+            --output tsv)
+          echo "production_url=https://$FQDN" >> "$GITHUB_OUTPUT"
+
+      - name: Print production URL
+        run: echo "Production deployed → ${{ steps.get-url.outputs.production_url }}"

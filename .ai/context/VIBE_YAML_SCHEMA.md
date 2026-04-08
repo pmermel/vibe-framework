@@ -54,11 +54,25 @@ Deployment targets per environment.
 deploy:
   preview:
     target: container-app   # or static-web-app
+    max_concurrent: 3
+    ttl_hours: 48
   staging:
     target: container-app
   production:
     target: container-app
 ```
+
+#### `deploy.preview`
+
+| Field | Type | Description |
+|---|---|---|
+| `target` | string | Preview deploy target: `container-app` or `static-web-app` |
+| `max_concurrent` | number | Maximum active preview environments allowed for the project. Default: `3` |
+| `ttl_hours` | number | Delete or deactivate preview environments after this many hours if they were not cleaned up on PR close. Default: `48` |
+
+- `max_concurrent` and `ttl_hours` are the preview cost-safety contract and are actively enforced.
+- `max_concurrent` is enforced by `reusable-preview.yml` at deploy time: on first deploy for a PR, the workflow counts active apps by prefix and deletes the oldest (Container App + matching ACR image tag) if the limit is reached. Update pushes to an existing PR skip enforcement.
+- `ttl_hours` is enforced by `reusable-preview-ttl-cleanup.yml` on a scheduled run, which deletes preview apps and their ACR images older than the configured threshold.
 
 ### `azure`
 Azure resource configuration.
@@ -67,6 +81,7 @@ Azure resource configuration.
 |---|---|---|
 | `region` | string | Azure region. Default: `eastus2` |
 | `resource_group` | string | Resource group name |
+| `registry` | string | Azure Container Registry name — alphanumeric only, globally unique, 5–50 chars. Convention: app name with hyphens removed + `acr` suffix (e.g. `myappacr`) |
 | `container_app_environment` | string | Container Apps environment name |
 | `preview_app_prefix` | string | Prefix for ephemeral preview Container Apps |
 | `staging_app` | string | Staging Container App name |
@@ -90,6 +105,7 @@ github:
     preview: pmermel/vibe-framework/.github/workflows/reusable-preview.yml@v1
     staging: pmermel/vibe-framework/.github/workflows/reusable-staging.yml@v1
     production: pmermel/vibe-framework/.github/workflows/reusable-production.yml@v1
+    preview_ttl_cleanup: pmermel/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
 ```
 
 - References must be pinned to a release tag or commit SHA — never `@main`.
@@ -99,6 +115,16 @@ github:
 GitHub usernames that may approve production deployments.
 - Type: array of strings
 - Example: `[your-github-username]`
+
+## Deferred Fields
+
+### `cloud`
+
+Do not add a top-level `cloud` field in v1.
+
+- Azure is the only supported cloud target in v1.
+- Reserving `cloud: azure` now would imply multicloud support before non-Azure adapters exist.
+- Introduce `cloud` only when a second cloud target becomes a real supported adapter rather than a placeholder.
 
 ## Provider Neutrality Rules
 
@@ -130,6 +156,8 @@ build:
 deploy:
   preview:
     target: container-app
+    max_concurrent: 3
+    ttl_hours: 48
   staging:
     target: container-app
   production:
@@ -138,6 +166,7 @@ deploy:
 azure:
   region: eastus2
   resource_group: my-app-rg
+  registry: myappacr
   container_app_environment: my-app-env
   preview_app_prefix: my-app-pr
   staging_app: my-app-staging
@@ -150,6 +179,7 @@ github:
     preview: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-preview.yml@v1
     staging: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-staging.yml@v1
     production: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-production.yml@v1
+    preview_ttl_cleanup: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
 
 approvers:
   - YOUR_GITHUB_USERNAME
