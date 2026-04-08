@@ -4,7 +4,7 @@ This document describes how vibe-framework releases are cut and how generated pr
 
 ## What a release is
 
-A vibe-framework release is a Git tag on `main` that marks a stable, tested set of reusable workflows and backend contracts. Generated projects pin their `workflow_refs` in `vibe.yaml` to a release tag. Without a tag, `@main` would be required — which is explicitly prohibited by the framework's workflow pinning rules.
+A vibe-framework release is a Git tag on `main` that marks a stable, tested set of reusable workflows and backend contracts. Generated projects pin their `workflow_refs` in `vibe.yaml` to a release tag or a commit SHA. Either form is acceptable; `@main` is explicitly prohibited. Release tags are the preferred pinning mechanism because they are human-readable and stable by convention, but SHA pins are equally valid and are used when a specific commit must be targeted without waiting for a tag.
 
 ## Versioning scheme
 
@@ -63,7 +63,7 @@ github:
 
 To upgrade to a new framework version:
 
-1. Bump the tag suffix in all `workflow_refs` entries from `@vN` to `@vN+1`.
+1. Bump the ref in all `workflow_refs` entries to the new tag (e.g. `@v1` → `@v2`) or a specific commit SHA.
 2. Review the release notes for any breaking changes or required `vibe.yaml` schema updates.
 3. Re-run bootstrap automation — it reads `workflow_refs` and regenerates thin wrapper workflow files in `.github/workflows/`.
 4. Open a PR with the updated `vibe.yaml` and regenerated wrappers for review before merging.
