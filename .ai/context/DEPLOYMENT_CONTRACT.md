@@ -213,10 +213,8 @@ Cost-safety defaults come from `vibe.yaml` and are enforced by workflow and boot
 
 | vibe.yaml field | Default | Enforcement point |
 |---|---|---|
-| `deploy.preview.max_concurrent` | `3` | Not yet enforced at workflow runtime in v1 — deferred to a future release. The value is reserved in `vibe.yaml` for when manifest-driven enforcement is implemented. |
+| `deploy.preview.max_concurrent` | `3` | Enforced in `reusable-preview.yml` on first deploy for a PR. Before creating a new preview app, the workflow counts active apps by prefix and deletes the oldest (app + ACR image) if the limit is reached. Update pushes to an existing PR skip enforcement. |
 | `deploy.preview.ttl_hours` | `48` | Converted to `max_age_days` (ceiling division by 24) for the `reusable-preview-ttl-cleanup.yml` wrapper input. Primary cleanup is still PR-close; TTL cleanup is the backstop for abandoned previews. |
-
-`max_concurrent` enforcement is explicitly deferred in v1 because implementing it requires querying live Azure resources to count active preview apps, which adds complexity and latency to the PR deploy path. The default of 3 concurrent previews is a soft guidance value until enforcement is built.
 
 ---
 
