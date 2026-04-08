@@ -70,9 +70,9 @@ deploy:
 | `max_concurrent` | number | Maximum active preview environments allowed for the project. Default: `3` |
 | `ttl_hours` | number | Delete or deactivate preview environments after this many hours if they were not cleaned up on PR close. Default: `48` |
 
-- `max_concurrent` and `ttl_hours` are the preview cost-safety contract.
-- Reusable preview lifecycle automation must enforce these values once manifest-driven enforcement is implemented.
-- Defaults must be documented even if the first implementation still uses wrapper-workflow inputs before reading directly from `vibe.yaml`.
+- `max_concurrent` and `ttl_hours` are the preview cost-safety contract and are actively enforced.
+- `max_concurrent` is enforced by `reusable-preview.yml` at deploy time: on first deploy for a PR, the workflow counts active apps by prefix and deletes the oldest (Container App + matching ACR image tag) if the limit is reached. Update pushes to an existing PR skip enforcement.
+- `ttl_hours` is enforced by `reusable-preview-ttl-cleanup.yml` on a scheduled run, which deletes preview apps and their ACR images older than the configured threshold.
 
 ### `azure`
 Azure resource configuration.
