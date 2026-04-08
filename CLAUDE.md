@@ -48,8 +48,8 @@ cd backend && npx tsc --noEmit
 # Validate Bicep templates
 az bicep build --file infrastructure/container-apps-env.bicep
 
-# Run init.sh (framework bootstrap)
-bash scripts/init.sh
+# Run init.sh (framework bootstrap) — Phase 3, not yet implemented
+# bash scripts/init.sh
 
 # Lint
 cd backend && npm run lint
@@ -63,8 +63,8 @@ vibe-framework/
 ├── .devcontainer/        # Codespaces config (Claude Code path)
 ├── .github/workflows/    # Reusable pipeline logic — all projects call these
 ├── infrastructure/       # Azure Bicep templates
-├── scripts/              # init.sh, setup-azure.sh, setup-github.sh
-├── templates/            # Project scaffolds (nextjs, react-vite, node-api)
+├── scripts/              # init.sh, setup-azure.sh, setup-github.sh (Phase 3 — not yet implemented)
+├── templates/            # Project scaffolds — Phase 3; scaffold logic currently in backend/src/scaffold/
 ├── AGENTS.md             # Codex operating instructions
 ├── CLAUDE.md             # This file
 ├── plan.md               # Authoritative build spec
