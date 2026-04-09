@@ -36,7 +36,7 @@ export async function postStatus(params: Record<string, unknown>): Promise<unkno
   if (preview_url && screenshot_url) {
     body = [
       "## Preview Status",
-      `${emoji} Preview deployed`,
+      `${emoji} **${status.toUpperCase()}** — ${message}`,
       "",
       `**Preview URL:** ${preview_url}`,
       "",
