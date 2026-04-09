@@ -70,6 +70,12 @@ az acr build \
   --file "$REPO_ROOT/backend/Dockerfile" \
   "$REPO_ROOT"
 
+echo "→ Capturing storage account name from deployment outputs"
+STORAGE_ACCOUNT_NAME=$(az deployment group show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "framework-env-deploy" \
+  --query "properties.outputs.storageAccountName.value" -o tsv)
+
 echo "→ Updating Container App to use real image"
 az containerapp update \
   --name "$BACKEND_APP_NAME" \
@@ -79,6 +85,14 @@ az containerapp update \
   --registry-identity system \
   --output none
 
+echo "→ Wiring storage account name to Container App env var"
+az containerapp update \
+  --name "${BACKEND_APP_NAME:-vibe-backend}" \
+  --resource-group "$RESOURCE_GROUP" \
+  --set-env-vars "AZURE_STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME" \
+  --output none
+
 echo "→ Azure provisioning complete"
-echo "   Backend URL:      $BACKEND_URL"
-echo "   ACR login server: $ACR_LOGIN_SERVER"
+echo "   Backend URL:        $BACKEND_URL"
+echo "   ACR login server:   $ACR_LOGIN_SERVER"
+echo "   Storage account:    $STORAGE_ACCOUNT_NAME"

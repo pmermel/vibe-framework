@@ -19,30 +19,25 @@ const CapturePreviewParams = z.object({
  * Takes a Playwright screenshot of a deployed preview URL at mobile viewport
  * (390×844 — iPhone 14 Pro by default) to support the phone-first review workflow.
  *
- * Current status: PARTIAL — screenshot is captured and returned, but NOT posted
- * to GitHub. Screenshot hosting requires external durable storage (Azure Blob
- * Storage or similar) that is compatible with the GitHub App installation-token
- * auth model and does not grow git history with binary blobs.
+ * If `AZURE_STORAGE_ACCOUNT_NAME` is set in the environment, uploads the screenshot
+ * to the `screenshots` container in that storage account using DefaultAzureCredential
+ * (managed identity in production) and returns the public blob URL. The backend
+ * Container App's system-assigned identity must have the Storage Blob Data Contributor
+ * role on the storage account (provisioned by framework-env.bicep).
  *
- * Why not git-based hosting (commits to a screenshots branch):
- * Every preview run permanently adds binary PNG blobs to the project repository
- * with no automated cleanup. Screenshots are transient PR review artifacts, not
- * source history, so git history is the wrong durability boundary.
+ * If `AZURE_STORAGE_ACCOUNT_NAME` is not set, returns `posted: false` with
+ * `posted_deferred_reason: "external_storage_required"` and does not make any
+ * Azure Storage calls.
  *
- * Why not GitHub Gist: POST /gists is user-token-only and is not callable with
- * a GitHub App installation token, which is the auth model this framework uses.
- *
- * Posting is planned for Phase 3 once Azure Blob Storage is wired into the
- * bootstrap path. When available, the action will upload the screenshot to Blob
- * Storage and post a PR comment with the blob URL.
- *
- * Does NOT make any GitHub API calls in this partial implementation.
- * Does NOT upload to Azure Blob Storage (deferred).
+ * Does NOT make any GitHub API calls — callers should use post_status to post
+ * the returned `screenshot_url` to a PR comment.
+ * Does NOT deploy or promote anything.
  * Requires Playwright chromium: npx playwright install chromium --with-deps
  *
  * @param params - Must match `CapturePreviewParams` schema
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400)
  * @throws Playwright errors if the browser cannot load the URL
+ * @throws Azure Storage errors if upload fails (when storage account is configured)
  */
 export async function capturePreview(params: Record<string, unknown>): Promise<unknown> {
   const parsed = CapturePreviewParams.safeParse(params);
@@ -62,6 +57,41 @@ export async function capturePreview(params: Record<string, unknown>): Promise<u
     screenshot = await page.screenshot({ type: "png", fullPage: false });
   } finally {
     await browser.close();
+  }
+
+  const storageAccountName = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+
+  if (storageAccountName) {
+    // Upload to Azure Blob Storage using managed identity (DefaultAzureCredential).
+    // Requires the backend identity to have Storage Blob Data Contributor on the account.
+    const { BlobServiceClient } = await import("@azure/storage-blob");
+    const { DefaultAzureCredential } = await import("@azure/identity");
+
+    const credential = new DefaultAzureCredential();
+    const blobServiceClient = new BlobServiceClient(
+      `https://${storageAccountName}.blob.core.windows.net`,
+      credential
+    );
+
+    const containerClient = blobServiceClient.getContainerClient("screenshots");
+    const blobName = `pr-${pr_number}/${Date.now()}.png`;
+    const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+
+    await blockBlobClient.uploadData(screenshot, {
+      blobHTTPHeaders: { blobContentType: "image/png" },
+    });
+
+    const screenshotUrl = `https://${storageAccountName}.blob.core.windows.net/screenshots/${blobName}`;
+
+    return {
+      url,
+      github_repo,
+      pr_number,
+      size_bytes: screenshot.length,
+      status: "captured",
+      posted: true,
+      screenshot_url: screenshotUrl,
+    };
   }
 
   return {

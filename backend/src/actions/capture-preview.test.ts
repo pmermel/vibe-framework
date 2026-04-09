@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock Playwright before importing the module under test
 vi.mock("playwright", () => ({
@@ -12,6 +12,24 @@ vi.mock("playwright", () => ({
       close: vi.fn().mockResolvedValue(undefined),
     }),
   },
+}));
+
+// Mock @azure/storage-blob
+const mockUploadData = vi.fn().mockResolvedValue(undefined);
+const mockGetBlockBlobClient = vi.fn().mockReturnValue({ uploadData: mockUploadData });
+const mockGetContainerClient = vi.fn().mockReturnValue({ getBlockBlobClient: mockGetBlockBlobClient });
+const mockBlobServiceClientConstructor = vi.fn().mockReturnValue({
+  getContainerClient: mockGetContainerClient,
+});
+
+vi.mock("@azure/storage-blob", () => ({
+  BlobServiceClient: mockBlobServiceClientConstructor,
+}));
+
+// Mock @azure/identity
+const mockDefaultAzureCredential = vi.fn().mockReturnValue({});
+vi.mock("@azure/identity", () => ({
+  DefaultAzureCredential: mockDefaultAzureCredential,
 }));
 
 import { capturePreview } from "./capture-preview.js";
@@ -87,10 +105,14 @@ describe("capturePreview — param validation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Happy path
+// Happy path — no storage account configured (fallback)
 // ---------------------------------------------------------------------------
 
-describe("capturePreview — happy path", () => {
+describe("capturePreview — fallback (no AZURE_STORAGE_ACCOUNT_NAME)", () => {
+  beforeEach(() => {
+    delete process.env.AZURE_STORAGE_ACCOUNT_NAME;
+  });
+
   it("returns status:captured with size_bytes and posted:false", async () => {
     const result = (await capturePreview({
       url: "https://preview.example.com",
@@ -107,8 +129,19 @@ describe("capturePreview — happy path", () => {
     expect(result.pr_number).toBe(5);
   });
 
+  it("does not call Azure Blob Storage when storage account is not set", async () => {
+    mockUploadData.mockClear();
+
+    await capturePreview({
+      url: "https://preview.example.com",
+      github_repo: "owner/repo",
+      pr_number: 1,
+    });
+
+    expect(mockUploadData).not.toHaveBeenCalled();
+  });
+
   it("does not make any GitHub API calls (no token required for partial impl)", async () => {
-    // Verify no github-client import is used — action is self-contained to Playwright
     const result = await capturePreview({
       url: "https://preview.example.com",
       github_repo: "owner/repo",
@@ -164,10 +197,88 @@ describe("capturePreview — happy path", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Happy path — Azure Blob Storage upload
+// ---------------------------------------------------------------------------
+
+describe("capturePreview — Azure Blob Storage upload", () => {
+  beforeEach(() => {
+    process.env.AZURE_STORAGE_ACCOUNT_NAME = "testvibeshots";
+    mockUploadData.mockClear();
+    mockGetBlockBlobClient.mockClear();
+    mockGetContainerClient.mockClear();
+    mockBlobServiceClientConstructor.mockClear();
+  });
+
+  afterEach(() => {
+    delete process.env.AZURE_STORAGE_ACCOUNT_NAME;
+  });
+
+  it("returns posted:true and screenshot_url when storage account is configured", async () => {
+    const result = (await capturePreview({
+      url: "https://preview.example.com",
+      github_repo: "owner/repo",
+      pr_number: 42,
+    })) as Record<string, unknown>;
+
+    expect(result.posted).toBe(true);
+    expect(result.screenshot_url).toMatch(
+      /^https:\/\/testvibeshots\.blob\.core\.windows\.net\/screenshots\/pr-42\/\d+\.png$/
+    );
+    expect(result.status).toBe("captured");
+    expect(result.size_bytes).toBeGreaterThan(0);
+    expect(result.posted_deferred_reason).toBeUndefined();
+  });
+
+  it("calls BlobServiceClient with correct storage account URL", async () => {
+    await capturePreview({
+      url: "https://preview.example.com",
+      github_repo: "owner/repo",
+      pr_number: 7,
+    });
+
+    expect(mockBlobServiceClientConstructor).toHaveBeenCalledWith(
+      "https://testvibeshots.blob.core.windows.net",
+      expect.anything()
+    );
+  });
+
+  it("uploads to the screenshots container with correct blob name pattern", async () => {
+    await capturePreview({
+      url: "https://preview.example.com",
+      github_repo: "owner/repo",
+      pr_number: 99,
+    });
+
+    expect(mockGetContainerClient).toHaveBeenCalledWith("screenshots");
+    const blobName = mockGetBlockBlobClient.mock.calls[0][0] as string;
+    expect(blobName).toMatch(/^pr-99\/\d+\.png$/);
+  });
+
+  it("calls uploadData with PNG content type header", async () => {
+    await capturePreview({
+      url: "https://preview.example.com",
+      github_repo: "owner/repo",
+      pr_number: 1,
+    });
+
+    expect(mockUploadData).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      expect.objectContaining({
+        blobHTTPHeaders: { blobContentType: "image/png" },
+      })
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Error paths
 // ---------------------------------------------------------------------------
 
 describe("capturePreview — error paths", () => {
+  beforeEach(() => {
+    delete process.env.AZURE_STORAGE_ACCOUNT_NAME;
+  });
+
   it("surfaces Playwright navigation errors to the caller", async () => {
     const { chromium } = await import("playwright");
     vi.mocked(chromium.launch).mockResolvedValue({
