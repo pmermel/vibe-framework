@@ -233,55 +233,91 @@ export async function createProject(params: Record<string, unknown>): Promise<un
     sha: commitResponse.data.sha,
   });
 
+  // Open the bootstrap PR immediately — before any provisioning.
+  // The PR is the GitHub-centered handoff surface. It must exist as soon as the
+  // scaffold branch is pushed so that partial failures leave the user with a
+  // recoverable, reviewable state in GitHub rather than a silent dead end.
+  const prResponse = await octokit.pulls.create({
+    owner: config.github_owner,
+    repo: config.name,
+    title: "chore(bootstrap): vibe-framework scaffold",
+    body: bootstrapPrBody(config.name, config.azure_region, undefined),
+    head: bootstrapBranch,
+    base: defaultBranch,
+  });
+
+  const prNumber = prResponse.data.number;
+
   // --- Azure provisioning and GitHub repo configuration ---
   // Only performed when azure_subscription_id is provided.
-  // configureCloud is async and slow (deploys ARM templates). This is acceptable
-  // because create_project is already a long-running operation.
+  // Runs after the PR is open so any failure is still visible and recoverable via GitHub.
   let cloudOutputs: Record<string, unknown> | undefined;
   let cloudProvisioned = false;
   let repoConfigured = false;
 
   if (config.azure_subscription_id) {
-    cloudOutputs = (await configureCloud({
-      project_name: config.name,
-      github_repo: `${config.github_owner}/${config.name}`,
-      azure_subscription_id: config.azure_subscription_id,
-      azure_region: config.azure_region,
-      adapter: config.adapter,
-    })) as Record<string, unknown>;
-
-    // Only proceed with configureRepo if cloud provisioning succeeded (not "not_implemented")
-    if (cloudOutputs.status !== "not_implemented") {
-      cloudProvisioned = true;
-
-      const oidcClientIds = cloudOutputs.oidc_client_ids as { preview: string; staging: string; production: string };
-
-      await configureRepo({
+    try {
+      cloudOutputs = (await configureCloud({
+        project_name: config.name,
         github_repo: `${config.github_owner}/${config.name}`,
-        approvers: config.approvers,
-        azure_client_ids: oidcClientIds,
-        azure_tenant_id: cloudOutputs.tenant_id as string,
-        azure_subscription_id: cloudOutputs.subscription_id as string,
-      });
+        azure_subscription_id: config.azure_subscription_id,
+        azure_region: config.azure_region,
+        adapter: config.adapter,
+      })) as Record<string, unknown>;
 
-      repoConfigured = true;
+      // Only proceed with configureRepo if cloud provisioning succeeded (not "not_implemented")
+      if (cloudOutputs.status !== "not_implemented") {
+        cloudProvisioned = true;
+
+        const oidcClientIds = cloudOutputs.oidc_client_ids as { preview: string; staging: string; production: string };
+
+        await configureRepo({
+          github_repo: `${config.github_owner}/${config.name}`,
+          approvers: config.approvers,
+          azure_client_ids: oidcClientIds,
+          azure_tenant_id: cloudOutputs.tenant_id as string,
+          azure_subscription_id: cloudOutputs.subscription_id as string,
+        });
+
+        repoConfigured = true;
+
+        // Update PR body with real Azure outputs now that provisioning succeeded.
+        await octokit.pulls.update({
+          owner: config.github_owner,
+          repo: config.name,
+          pull_number: prNumber,
+          body: bootstrapPrBody(config.name, config.azure_region, cloudOutputs),
+        });
+      }
+    } catch (err: unknown) {
+      // Provisioning failed — post an error comment to the PR so the failure is
+      // visible and recoverable in GitHub. Re-throw so the caller knows it failed.
+      await octokit.issues.createComment({
+        owner: config.github_owner,
+        repo: config.name,
+        issue_number: prNumber,
+        body: [
+          "❌ **Azure provisioning failed**",
+          "",
+          "The repository and bootstrap branch were created successfully, but Azure provisioning failed with:",
+          "",
+          "```",
+          String(err),
+          "```",
+          "",
+          "To retry, call `configure_cloud` and `configure_repo` with this repo as the target, then update the PR description with the outputs.",
+        ].join("\n"),
+      }).catch(() => {
+        // Best-effort — don't mask the original error if the comment itself fails.
+      });
+      throw err;
     }
   }
-
-  // Open the bootstrap PR — body includes real Azure outputs when provisioning succeeded
-  const prResponse = await octokit.pulls.create({
-    owner: config.github_owner,
-    repo: config.name,
-    title: "chore(bootstrap): vibe-framework scaffold",
-    body: bootstrapPrBody(config.name, config.azure_region, cloudProvisioned ? cloudOutputs : undefined),
-    head: bootstrapBranch,
-    base: defaultBranch,
-  });
 
   return {
     repo_url: repoUrl,
     pr_url: prResponse.data.html_url,
-    pr_number: prResponse.data.number,
+    pr_number: prNumber,
     cloud_provisioned: cloudProvisioned,
     repo_configured: repoConfigured,
   };

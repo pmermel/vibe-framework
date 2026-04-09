@@ -43,6 +43,10 @@ const mockOctokit = {
   },
   pulls: {
     create: vi.fn(),
+    update: vi.fn(),
+  },
+  issues: {
+    createComment: vi.fn(),
   },
   request: vi.fn(),
 };
@@ -118,6 +122,11 @@ function setupHappyPath(ownerType: "User" | "Organization" = "User", login = "ac
       html_url: "https://github.com/acme/my-app/pull/1",
       number: 1,
     },
+  });
+
+  mockOctokit.pulls.update.mockResolvedValue({});
+  mockOctokit.issues.createComment.mockResolvedValue({
+    data: { id: 999, html_url: "https://github.com/acme/my-app/pull/1#issuecomment-999" },
   });
 
   // Codespaces API — succeed by default
@@ -620,7 +629,7 @@ describe("createProject — cloud and repo orchestration", () => {
     expect(result.repo_configured).toBe(false);
   });
 
-  it("includes real Azure outputs in PR body when provisioning succeeds", async () => {
+  it("opens bootstrap PR first with placeholder body, then updates with Azure outputs after provisioning", async () => {
     await createProject({
       name: "my-app",
       template: "nextjs",
@@ -629,13 +638,22 @@ describe("createProject — cloud and repo orchestration", () => {
       azure_subscription_id: "sub-123",
     });
 
+    // PR opened first with placeholder body (before provisioning)
     const prCreateCall = mockOctokit.pulls.create.mock.calls[0]?.[0] as { body: string };
-    expect(prCreateCall.body).toContain("myappackr.azurecr.io");
-    expect(prCreateCall.body).toContain("my-app-staging.eastus2.azurecontainerapps.io");
-    expect(prCreateCall.body).toContain("my-app-prod.eastus2.azurecontainerapps.io");
+    expect(prCreateCall.body).toContain("Azure OIDC trust");
+    expect(prCreateCall.body).not.toContain("azurecr.io");
+
+    // PR updated after provisioning succeeds with real Azure outputs
+    expect(mockOctokit.pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 1, owner: "acme-org", repo: "my-app" })
+    );
+    const prUpdateCall = mockOctokit.pulls.update.mock.calls[0]?.[0] as { body: string };
+    expect(prUpdateCall.body).toContain("myappackr.azurecr.io");
+    expect(prUpdateCall.body).toContain("my-app-staging.eastus2.azurecontainerapps.io");
+    expect(prUpdateCall.body).toContain("my-app-prod.eastus2.azurecontainerapps.io");
   });
 
-  it("includes placeholder checklist in PR body when no azure_subscription_id is provided", async () => {
+  it("opens PR with placeholder body and does not call pulls.update when no azure_subscription_id", async () => {
     await createProject({
       name: "my-app",
       template: "nextjs",
@@ -646,5 +664,36 @@ describe("createProject — cloud and repo orchestration", () => {
     const prCreateCall = mockOctokit.pulls.create.mock.calls[0]?.[0] as { body: string };
     expect(prCreateCall.body).toContain("Azure OIDC trust");
     expect(prCreateCall.body).not.toContain("azurecr.io");
+    expect(mockOctokit.pulls.update).not.toHaveBeenCalled();
+  });
+
+  it("posts error comment to PR and re-throws when configureCloud fails", async () => {
+    const provisioningError = new Error("ARM deployment failed: quota exceeded");
+    mockConfigureCloud.mockRejectedValue(provisioningError);
+
+    await expect(
+      createProject({
+        name: "my-app",
+        template: "nextjs",
+        github_owner: "acme-org",
+        approvers: ["alice"],
+        azure_subscription_id: "sub-123",
+      })
+    ).rejects.toThrow("ARM deployment failed: quota exceeded");
+
+    // PR must have been opened before the failure
+    expect(mockOctokit.pulls.create).toHaveBeenCalled();
+
+    // Error comment posted to PR so failure is visible in GitHub
+    expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 1,
+        owner: "acme-org",
+        repo: "my-app",
+      })
+    );
+    const commentBody = (mockOctokit.issues.createComment.mock.calls[0]?.[0] as { body: string }).body;
+    expect(commentBody).toContain("Azure provisioning failed");
+    expect(commentBody).toContain("ARM deployment failed: quota exceeded");
   });
 });
