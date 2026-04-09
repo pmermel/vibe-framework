@@ -127,7 +127,19 @@ else
       "github-app-installation-id=$GITHUB_APP_INSTALLATION_ID" \
     --output none
 
-  echo "→ GitHub App credentials stored successfully"
+  # Container Apps secrets are not injected automatically — they must be explicitly wired
+  # to environment variables via secretRef so the backend can read them from process.env.
+  echo "→ Wiring secrets to container environment variables"
+  az containerapp update \
+    --name "${BACKEND_APP_NAME:-vibe-backend}" \
+    --resource-group "$RESOURCE_GROUP" \
+    --set-env-vars \
+      "GITHUB_APP_ID=secretref:github-app-id" \
+      "GITHUB_APP_PRIVATE_KEY=secretref:github-app-private-key" \
+      "GITHUB_APP_INSTALLATION_ID=secretref:github-app-installation-id" \
+    --output none
+
+  echo "→ GitHub App credentials stored and wired to container environment"
 fi
 
 echo ""
