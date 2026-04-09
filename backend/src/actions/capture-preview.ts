@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { chromium } from "playwright";
-import { getGithubClient } from "../lib/github-client.js";
 
 const CapturePreviewParams = z.object({
   url: z.string().url(),
@@ -14,35 +13,36 @@ const CapturePreviewParams = z.object({
     .default({ width: 390, height: 844 }),
 });
 
-const SCREENSHOTS_BRANCH = "screenshots";
-
 /**
  * capture_preview
  *
- * Takes a Playwright screenshot of a deployed preview URL and posts it as a
- * comment on the GitHub PR. The screenshot is committed to a dedicated
- * `screenshots` branch in the project repository, then referenced via the
- * raw GitHub URL in a markdown image in the PR comment.
+ * Takes a Playwright screenshot of a deployed preview URL at mobile viewport
+ * (390×844 — iPhone 14 Pro by default) to support the phone-first review workflow.
  *
- * Why not GitHub Gist: GitHub App installation tokens cannot create Gists
- * (POST /gists is user-token-only). Committing to the project repo is fully
- * compatible with the framework's installation-token auth model.
+ * Current status: PARTIAL — screenshot is captured and returned, but NOT posted
+ * to GitHub. Screenshot hosting requires external durable storage (Azure Blob
+ * Storage or similar) that is compatible with the GitHub App installation-token
+ * auth model and does not grow git history with binary blobs.
  *
- * Branch strategy: Screenshots are committed to `refs/heads/screenshots` in
- * the project repo. This branch is created automatically from the default
- * branch if it does not already exist. Keeping screenshots on a separate
- * branch avoids cluttering the main development history.
+ * Why not git-based hosting (commits to a screenshots branch):
+ * Every preview run permanently adds binary PNG blobs to the project repository
+ * with no automated cleanup. Screenshots are transient PR review artifacts, not
+ * source history, so git history is the wrong durability boundary.
  *
- * Default viewport is mobile (390x844 — iPhone 14 Pro) to support the
- * phone-first review workflow.
+ * Why not GitHub Gist: POST /gists is user-token-only and is not callable with
+ * a GitHub App installation token, which is the auth model this framework uses.
  *
- * Does NOT upload to Azure Blob Storage.
- * Does NOT deduplicate comments — each call creates a new comment and commit.
+ * Posting is planned for Phase 3 once Azure Blob Storage is wired into the
+ * bootstrap path. When available, the action will upload the screenshot to Blob
+ * Storage and post a PR comment with the blob URL.
+ *
+ * Does NOT make any GitHub API calls in this partial implementation.
+ * Does NOT upload to Azure Blob Storage (deferred).
  * Requires Playwright chromium: npx playwright install chromium --with-deps
  *
  * @param params - Must match `CapturePreviewParams` schema
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400)
- * @throws GitHub API errors if branch creation, file upload, or comment fails
+ * @throws Playwright errors if the browser cannot load the URL
  */
 export async function capturePreview(params: Record<string, unknown>): Promise<unknown> {
   const parsed = CapturePreviewParams.safeParse(params);
@@ -51,7 +51,6 @@ export async function capturePreview(params: Record<string, unknown>): Promise<u
   }
 
   const { url, github_repo, pr_number, viewport } = parsed.data;
-  const [owner, repo] = github_repo.split("/");
 
   // Take screenshot
   const browser = await chromium.launch();
@@ -65,75 +64,16 @@ export async function capturePreview(params: Record<string, unknown>): Promise<u
     await browser.close();
   }
 
-  const octokit = getGithubClient();
-  const filename = `previews/pr-${pr_number}-${Date.now()}.png`;
-
-  // Ensure the screenshots branch exists. If not, create it from the default branch.
-  let branchExists = true;
-  try {
-    await octokit.git.getRef({ owner, repo, ref: `heads/${SCREENSHOTS_BRANCH}` });
-  } catch (err: unknown) {
-    if ((err as { status?: number }).status === 404) {
-      branchExists = false;
-    } else {
-      throw err;
-    }
-  }
-
-  if (!branchExists) {
-    const { data: repoData } = await octokit.repos.get({ owner, repo });
-    const { data: defaultRef } = await octokit.git.getRef({
-      owner,
-      repo,
-      ref: `heads/${repoData.default_branch}`,
-    });
-    await octokit.git.createRef({
-      owner,
-      repo,
-      ref: `refs/heads/${SCREENSHOTS_BRANCH}`,
-      sha: defaultRef.object.sha,
-    });
-  }
-
-  // Commit the screenshot PNG to the screenshots branch.
-  // repos.createOrUpdateFileContents is supported by GitHub App installation tokens,
-  // unlike the Gists API which requires user OAuth tokens.
-  await octokit.repos.createOrUpdateFileContents({
-    owner,
-    repo,
-    path: filename,
-    message: `chore: preview screenshot for PR #${pr_number}`,
-    content: screenshot.toString("base64"),
-    branch: SCREENSHOTS_BRANCH,
-  });
-
-  // Raw URL is stable once the file is committed to the branch.
-  const screenshotUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${SCREENSHOTS_BRANCH}/${filename}`;
-
-  const body = [
-    `📸 **Preview screenshot** — ${github_repo}#${pr_number}`,
-    `**URL:** ${url}`,
-    `**Viewport:** ${viewport.width}×${viewport.height}`,
-    ``,
-    `![Preview screenshot](${screenshotUrl})`,
-  ].join("\n");
-
-  const { data: comment } = await octokit.issues.createComment({
-    owner,
-    repo,
-    issue_number: pr_number,
-    body,
-  });
-
   return {
     url,
     github_repo,
     pr_number,
     size_bytes: screenshot.length,
     status: "captured",
-    posted: true,
-    screenshot_url: screenshotUrl,
-    comment_id: comment.id,
-    comment_url: comment.html_url,
+    // posted remains false until Azure Blob Storage is available as a hosting path.
+    // Screenshot hosting via git commits causes unbounded binary blob growth.
+    // Screenshot hosting via GitHub Gist requires user tokens (not installation tokens).
+    posted: false,
+    posted_deferred_reason: "external_storage_required",
   };
 }
