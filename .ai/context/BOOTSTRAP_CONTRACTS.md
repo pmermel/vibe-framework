@@ -12,7 +12,7 @@ Defines the contracts for all bootstrap actions in vibe-framework. Both provider
 | `post_status` | ✅ Implemented | Posts real GitHub PR comment via `issues.createComment`; returns `posted: true`, `comment_id`, `comment_url` |
 | `capture_preview` | ⚠️ Partial | Playwright screenshot captured and returned; posting deferred — no GitHub-App-compatible storage available without Azure Blob Storage; returns `posted: false`, `posted_deferred_reason: "external_storage_required"` |
 | `import_project` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
-| `bootstrap_framework` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
+| `bootstrap_framework` | ✅ Implemented | Validates GitHub App auth, backend `/health`, and GitHub environments (`preview`/`staging`/`production`); returns `{ status: "ok"\|"degraded", checks: { github_app, backend_health, environments }, details: string[] }`; never throws on check failure |
 | `generate_assets` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
 
 Stubs accept and validate the documented params (Zod schemas enforced — invalid params → 400) but return `{ status: "not_implemented" }` for valid requests without making external calls.
@@ -174,11 +174,11 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 **Use case:** Reconfiguration, validation, or repair after backend is already deployed.
 
 ### Responsibilities
-- Re-validate GitHub App auth and permissions.
-- Re-validate OIDC trust.
-- Re-validate backend remote MCP endpoint reachability.
-- Re-validate Codespaces enablement for framework repo.
-- Re-apply framework-level GitHub settings if missing or misconfigured.
+- Validate GitHub App auth (`octokit.apps.getAuthenticated()`).
+- Validate backend `/health` endpoint is reachable and returns 200.
+- Validate GitHub environments (`preview`, `staging`, `production`) exist on the framework repo.
+
+**Out of scope for current implementation:** OIDC trust validation, MCP endpoint reachability, Codespaces enablement, and re-applying framework settings are not performed by this action. If those checks are needed, run them manually or extend this action in a future phase.
 
 ---
 
