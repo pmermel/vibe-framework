@@ -109,11 +109,12 @@ read -rp "Enter path to GITHUB_APP_PRIVATE_KEY (.pem file): " GITHUB_APP_PRIVATE
 read -rp "Enter GITHUB_APP_INSTALLATION_ID (from App → Installations): " GITHUB_APP_INSTALLATION_ID
 
 if [[ -z "$GITHUB_APP_ID" || -z "$GITHUB_APP_PRIVATE_KEY_PATH" || -z "$GITHUB_APP_INSTALLATION_ID" ]]; then
-  echo "ERROR: All three GitHub App values are required. Skipping secret storage."
-  echo "       You can store them manually with:"
-  echo "       az containerapp secret set --name \$BACKEND_APP_NAME \\"
-  echo "         --resource-group \$RESOURCE_GROUP \\"
-  echo "         --secrets github-app-id=<ID> github-app-private-key=<KEY> github-app-installation-id=<INST_ID>"
+  echo ""
+  echo "ERROR: All three GitHub App values are required."
+  echo "       GitHub App setup is a required bootstrap dependency — init.sh cannot complete without it."
+  echo "       Re-run init.sh and provide all three values when prompted, or set them via env vars:"
+  echo "         GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY_PATH, GITHUB_APP_INSTALLATION_ID"
+  exit 1
 else
   PRIVATE_KEY_CONTENT=$(cat "$GITHUB_APP_PRIVATE_KEY_PATH")
 

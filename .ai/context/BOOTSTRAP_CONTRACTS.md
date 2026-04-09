@@ -174,11 +174,11 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 **Use case:** Reconfiguration, validation, or repair after backend is already deployed.
 
 ### Responsibilities
-- Re-validate GitHub App auth and permissions.
-- Re-validate OIDC trust.
-- Re-validate backend remote MCP endpoint reachability.
-- Re-validate Codespaces enablement for framework repo.
-- Re-apply framework-level GitHub settings if missing or misconfigured.
+- Validate GitHub App auth (`octokit.apps.getAuthenticated()`).
+- Validate backend `/health` endpoint is reachable and returns 200.
+- Validate GitHub environments (`preview`, `staging`, `production`) exist on the framework repo.
+
+**Out of scope for current implementation:** OIDC trust validation, MCP endpoint reachability, Codespaces enablement, and re-applying framework settings are not performed by this action. If those checks are needed, run them manually or extend this action in a future phase.
 
 ---
 
