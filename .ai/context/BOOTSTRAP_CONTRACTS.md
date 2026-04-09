@@ -6,7 +6,7 @@ Defines the contracts for all bootstrap actions in vibe-framework. Both provider
 
 | Action | Status | Notes |
 |---|---|---|
-| `create_project` (nextjs + container-app) | ✅ Implemented | Real scaffold + GitHub repo + bootstrap PR; react-vite/node-api deferred |
+| `create_project` (nextjs + container-app) | ✅ Implemented | Full bootstrap orchestrator: creates GitHub repo, scaffolds Next.js, enables Codespaces, opens bootstrap PR immediately (GitHub-centered handoff surface exists before provisioning), then calls `configure_cloud` + `configure_repo` when `azure_subscription_id` is provided; updates PR body with Azure outputs on success; posts error comment to PR on provisioning failure and re-throws. `configure_repo` receives per-environment `azure_client_ids` map from `configure_cloud` output. react-vite/node-api deferred to Phase 4. |
 | `configure_repo` | ✅ Implemented | Branch protections, environments, labels, OIDC secrets via GitHub App |
 | `configure_cloud` | ✅ Implemented | Deploys `container-apps-env.json` ARM template; provisions OIDC credentials via Microsoft Graph REST API; assigns Contributor + AcrPush roles via ARM REST; idempotent (check-before-create + deterministic GUID names); returns Azure outputs for `configure_repo` |
 | `post_status` | ✅ Implemented | Posts real GitHub PR comment via `issues.createComment`; returns `posted: true`, `comment_id`, `comment_url` |
@@ -28,7 +28,7 @@ These gates prevent the framework from expanding backend surface area faster tha
    - ngrok recommended over localtunnel for future validation runs (more stable).
 2. **Walking skeleton gate** ✅ Cleared (issue #55)
    - Proved one complete vertical slice: `create_project` → real GitHub repository → bootstrap PR.
-   - Important scope note: this gate validates the GitHub repo/PR creation flow only. Full end-to-end bootstrap (Azure provisioning via `configure_cloud`, GitHub Actions OIDC pipeline, PR enrichment loop) is Phase 3 work and not part of the gate definition.
+   - Phase 3 expansion: `create_project` now orchestrates `configure_cloud` + `configure_repo` inline when `azure_subscription_id` is provided, completing the full Azure provisioning + GitHub environment/secret wiring in a single action call. PR enrichment (screenshot posting via Azure Blob Storage) implemented in Phase 3 via `capture_preview` + `post_status`.
 
 ## GitHub App Setup Sub-Flow
 
