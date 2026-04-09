@@ -7,8 +7,13 @@ import { DefaultAzureCredential } from "@azure/identity";
 import { ResourceManagementClient } from "@azure/arm-resources";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-// Compiled ARM JSON lives three directories up: src/actions → src → backend → repo root
-const INFRA_DIR = join(__dirname, "../../../infrastructure");
+// Compiled ARM JSON lives one level up from the compiled action file.
+// At runtime:  dist/actions/configure-cloud.js  → ../infrastructure = dist/infrastructure/
+//              dist/infrastructure/ is populated by the `postbuild` npm script, which is
+//              run automatically by `npm run build` and by the Docker builder stage.
+// In dev mode: src/actions/configure-cloud.ts  → ../infrastructure = src/infrastructure/
+//              populated by the `predev` npm script before `tsx watch` starts.
+const INFRA_DIR = join(__dirname, "../infrastructure");
 
 const ConfigureCloudParams = z.object({
   project_name: z.string().min(1),

@@ -6,6 +6,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "postbuild": "mkdir -p dist/infrastructure && cp ../infrastructure/container-apps-env.json dist/infrastructure/container-apps-env.json",
+    "predev": "mkdir -p src/infrastructure && cp ../infrastructure/container-apps-env.json src/infrastructure/container-apps-env.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "lint": "echo 'lint not configured yet' && exit 0",
