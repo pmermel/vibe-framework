@@ -30,7 +30,7 @@ All three secrets are set by bootstrap automation on each of the three GitHub en
 
 | Secret | What it is | Set by | Used by |
 |---|---|---|---|
-| `AZURE_CLIENT_ID` | Client (application) ID of the Azure AD service principal for this environment — output of `oidc-federated-credential.bicep` for the matching `githubEnvironment` param | Bootstrap automation (`configure_repo`) after `configure_cloud` runs Bicep | All four reusable workflows |
+| `AZURE_CLIENT_ID` | Client (application) ID of the Azure AD service principal for this environment — `appId` from `configure_cloud` OIDC provisioning for the matching environment | Bootstrap automation (`configure_repo`) after `configure_cloud` provisions OIDC credentials | All four reusable workflows |
 | `AZURE_TENANT_ID` | Azure AD tenant ID for the subscription | Bootstrap automation (`configure_repo`) — same value on all three environments | All four reusable workflows |
 | `AZURE_SUBSCRIPTION_ID` | Azure subscription ID where the project's resource group lives | Bootstrap automation (`configure_repo`) — same value on all three environments | All four reusable workflows |
 
@@ -42,7 +42,12 @@ No long-lived credentials (passwords or client secrets) are stored anywhere. Git
 
 ## OIDC Federated Credential Subjects
 
-Federated credentials are provisioned by `infrastructure/oidc-federated-credential.bicep`, deployed once per environment per project during `configure_cloud`.
+Federated credentials are provisioned via the **Microsoft Graph REST API** by the `configure_cloud` backend action, once per environment per project. The `microsoftGraph` Bicep extension used in `infrastructure/oidc-federated-credential.bicep` was retired in Bicep 0.31 (BCP407 error); Azure AD resources must now be created via the Graph API directly.
+
+`configure_cloud` uses `DefaultAzureCredential` to acquire a Graph API token and calls:
+- `POST /v1.0/applications` — app registration per environment (idempotent: looks up by `uniqueName` before creating)
+- `POST /v1.0/servicePrincipals` — service principal per app (idempotent: looks up by `appId`)
+- `POST /v1.0/applications/{id}/federatedIdentityCredentials` — OIDC trust per app (idempotent: looks up by `name`)
 
 | GitHub Environment | OIDC subject |
 |---|---|
@@ -56,7 +61,7 @@ The federated credential issuer is always `https://token.actions.githubuserconte
 
 ## Azure RBAC Requirements
 
-Each service principal (one per environment) receives the following roles, granted by `infrastructure/oidc-federated-credential.bicep`:
+Each service principal (one per environment) receives the following roles, assigned by the `configure_cloud` backend action via the **ARM REST API** using deterministic GUID role assignment names (safe to retry; 409 Conflict treated as success):
 
 | Role | Scope | Purpose |
 |---|---|---|
@@ -67,26 +72,33 @@ The `AcrPull` role for Container Apps is granted separately — see ACR Pull Aut
 
 ---
 
-## Bicep Parameters: `oidc-federated-credential.bicep`
+## `configure_cloud` OIDC Provisioning (Microsoft Graph REST API)
 
-Called once per environment per project. The following parameters are required:
+OIDC resources are no longer provisioned from `oidc-federated-credential.bicep` (the `microsoftGraph` Bicep extension was retired in Bicep 0.31). The `configure_cloud` backend action calls the Microsoft Graph REST API directly, once per environment per project.
 
-| Parameter | Type | Description |
+Inputs used per environment:
+
+| Input | Description |
+|---|---|
+| `project_name` | Short project name — used as app registration `displayName` and `uniqueName` prefix |
+| `github_repo` | `owner/repo` — split into org and repo name for the OIDC subject |
+| `azure_subscription_id` | Subscription for Contributor role scope |
+| `azure_region` | Passed to ARM template for resource group location |
+| Resource group ID | `/subscriptions/{sub}/resourceGroups/{project_name}-rg` |
+| ACR ID | Returned from `container-apps-env.json` ARM deployment outputs |
+
+Outputs returned by `configure_cloud` for use by `configure_repo`:
+
+| Output field | Description | Stored as |
 |---|---|---|
-| `appName` | string | Short project name — used to label the app registration in Azure AD |
-| `githubOrg` | string | GitHub organisation or user owning the repository |
-| `githubRepo` | string | GitHub repository name (without org prefix) |
-| `githubEnvironment` | string (enum) | `preview`, `staging`, or `production` |
-| `resourceGroupId` | string | Resource ID of the project resource group |
-| `registryId` | string | Resource ID of the project ACR |
-
-Outputs:
-
-| Output | Description | Stored as |
-|---|---|---|
-| `clientId` | Azure AD application (client) ID | `AZURE_CLIENT_ID` on the matching GitHub environment |
-| `tenantId` | Azure AD tenant ID | `AZURE_TENANT_ID` on all three GitHub environments |
-| `principalId` | Service principal object ID | Used internally by bootstrap for verification |
+| `oidc_client_ids.preview` | Azure AD `appId` for preview environment | `AZURE_CLIENT_ID` on `preview` environment |
+| `oidc_client_ids.staging` | Azure AD `appId` for staging environment | `AZURE_CLIENT_ID` on `staging` environment |
+| `oidc_client_ids.production` | Azure AD `appId` for production environment | `AZURE_CLIENT_ID` on `production` environment |
+| `tenant_id` | Azure AD tenant ID (decoded from Graph token JWT `tid` claim) | `AZURE_TENANT_ID` on all three environments |
+| `subscription_id` | Azure subscription ID | `AZURE_SUBSCRIPTION_ID` on all three environments |
+| `acr_login_server` | ACR login server hostname | Reference for workflow configuration |
+| `staging_fqdn` | Staging Container App FQDN | Posted to PR or stored as variable |
+| `production_fqdn` | Production Container App FQDN | Posted to PR or stored as variable |
 
 ---
 
@@ -162,10 +174,10 @@ Each contract element is owned by exactly one layer. This table is the canonical
 | Production Container App resource | Bicep | `infrastructure/container-apps-env.bicep` |
 | Managed identity on staging/production Container Apps | Bicep | `infrastructure/container-apps-env.bicep` |
 | AcrPull role on staging/production managed identities | Bicep | `infrastructure/container-apps-env.bicep` |
-| Azure AD app registration per environment | Bicep | `infrastructure/oidc-federated-credential.bicep` (via `configure_cloud`) |
-| OIDC federated credentials per environment | Bicep | `infrastructure/oidc-federated-credential.bicep` (via `configure_cloud`) |
-| Contributor role on resource group per environment SP | Bicep | `infrastructure/oidc-federated-credential.bicep` (via `configure_cloud`) |
-| AcrPush role on ACR per environment SP | Bicep | `infrastructure/oidc-federated-credential.bicep` (via `configure_cloud`) |
+| Azure AD app registration per environment | Backend action | `configure_cloud` via Microsoft Graph REST API (`POST /v1.0/applications`) |
+| OIDC federated credentials per environment | Backend action | `configure_cloud` via Microsoft Graph REST API (`POST /v1.0/applications/{id}/federatedIdentityCredentials`) |
+| Contributor role on resource group per environment SP | Backend action | `configure_cloud` via ARM REST API (`PUT .../roleAssignments/{deterministicGuid}`) |
+| AcrPush role on ACR per environment SP | Backend action | `configure_cloud` via ARM REST API (`PUT .../roleAssignments/{deterministicGuid}`) |
 | GitHub environment creation (`preview`, `staging`, `production`) | Bootstrap automation | `configure_repo` backend action |
 | GitHub environment secrets (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) | Bootstrap automation | `configure_repo` (after `configure_cloud` outputs `clientId`) |
 | GitHub environment approval gate (production, required reviewers) | Bootstrap automation | `configure_repo` using `approvers` from `vibe.yaml` |
@@ -186,16 +198,21 @@ Each contract element is owned by exactly one layer. This table is the canonical
 
 ### `configure_cloud`
 
-Runs `infrastructure/oidc-federated-credential.bicep` three times (once per environment: `preview`, `staging`, `production`) and runs `infrastructure/container-apps-env.bicep` once. After completion:
+Deploys `infrastructure/container-apps-env.json` (pre-compiled ARM template — Bicep CLI not required at runtime) once, then provisions OIDC credentials via the Microsoft Graph REST API three times (once per environment: `preview`, `staging`, `production`). RBAC roles are assigned via the ARM REST API using deterministic GUID assignment names.
+
+> **Why Graph API instead of Bicep for OIDC resources:** The `microsoftGraph` Bicep extension used in `infrastructure/oidc-federated-credential.bicep` was retired in Bicep 0.31 (BCP407 error). Azure AD app registrations, service principals, and federated credentials must now be created via the Microsoft Graph REST API directly.
+
+After completion:
 
 - Project resource group exists with staging and production Container Apps provisioned.
-- Three Azure AD app registrations exist, each with a federated credential scoped to one GitHub environment.
-- RBAC roles are assigned.
-- Bicep outputs (`clientId`, `tenantId`, ACR resource ID) are returned to the caller for use by `configure_repo`.
+- Three Azure AD app registrations exist (one per GitHub environment), each with a service principal and federated credential scoped to that environment.
+- Contributor (resource group) and AcrPush (ACR) roles are assigned for each service principal.
+- All provisioning is idempotent: check-before-create for Graph resources, 409-as-success for RBAC assignments.
+- Azure outputs (`oidc_client_ids`, `tenant_id`, `subscription_id`, ACR login server, FQDNs) are returned to the caller for use by `configure_repo`.
 
 ### `configure_repo`
 
-Receives Bicep outputs from `configure_cloud` and:
+Receives Azure outputs from `configure_cloud` and:
 
 - Creates the three GitHub environments (`preview`, `staging`, `production`) in the project repo via the GitHub App.
 - Sets `AZURE_CLIENT_ID` as an environment secret on each environment using the per-environment `clientId` from Bicep output.

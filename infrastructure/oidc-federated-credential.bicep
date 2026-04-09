@@ -1,138 +1,80 @@
 // oidc-federated-credential.bicep
-// Provisions GitHub Actions OIDC trust for a single GitHub environment on a
-// project repository. This template must be called once per environment
-// (preview, staging, production), producing three separate Azure AD app
-// registrations and service principals, each with:
 //
-//   - An Azure AD application (app registration)
-//   - A service principal for that application
-//   - A federated credential linking the app to the specific GitHub repo +
-//     environment so GitHub Actions tokens are accepted without a stored secret
-//   - Contributor role on the project resource group (deploy access)
-//   - AcrPush role on the project ACR (image push access)
+// IMPORTANT — MAINTENANCE NOTE:
+// This Bicep file originally used the `extension microsoftGraph` Bicep extension
+// to create Azure AD app registrations, service principals, and federated
+// credentials inline. That extension was retired in Bicep 0.31 and can no longer
+// be compiled (error BCP407).
 //
-// OIDC only — this template does not create or output any client secrets.
+// Azure AD resources (app registrations, service principals, federated credentials)
+// must now be created via the Microsoft Graph REST API directly. In vibe-framework,
+// this is done by the `configure_cloud` backend action using `DefaultAzureCredential`
+// to acquire a Graph API token and calling the Microsoft Graph v1.0 endpoints.
 //
-// After deployment the caller stores the output clientId as the GitHub secret
-// AZURE_CLIENT_ID on the matching GitHub environment (preview / staging / production).
-// Each environment has its own app registration, so the same secret name
-// AZURE_CLIENT_ID is used on all three environments — GitHub scopes secrets to the
-// environment, which is how the reusable workflows and deployment contract expect it.
+// This file is retained for documentation: it describes the intended resource
+// topology and parameter contract. The RBAC role assignments (Contributor and
+// AcrPush) are also handled by `configure_cloud` via the ARM REST API directly.
 //
-// Required Azure RBAC to deploy: Owner (or User Access Administrator + Contributor)
-// on the target resource group, and Application Administrator in Azure AD.
-
-@description('Short application name — used to label the app registration.')
-param appName string
-
-@description('GitHub organisation or user that owns the repository.')
-param githubOrg string
-
-@description('GitHub repository name (without the org prefix).')
-param githubRepo string
-
-@description('GitHub Actions environment name this credential is scoped to.')
-@allowed([
-  'production'
-  'staging'
-  'preview'
-])
-param githubEnvironment string
-
-@description('Resource ID of the project resource group. The service principal receives Contributor on this scope.')
-param resourceGroupId string
-
-@description('Resource ID of the project ACR. The service principal receives AcrPush on this scope.')
-param registryId string
+// See: backend/src/actions/configure-cloud.ts
+// See: .ai/context/DEPLOYMENT_CONTRACT.md — Bootstrap Action Responsibilities
 
 // ---------------------------------------------------------------------------
-// Azure AD app registration
-// ---------------------------------------------------------------------------
-// Microsoft.Graph resources require the Microsoft Graph Bicep extension.
-// The extension is declared via the `extension microsoftGraph` statement below.
-// Bicep CLI 0.26+ supports this; older versions need --features microsoftGraphPreview.
-
-extension microsoftGraph
-
-resource adApp 'Microsoft.Graph/applications@v1.0' = {
-  // Display name surfaces in the Azure portal Entra ID blade
-  displayName: '${appName}-github-${githubEnvironment}'
-  uniqueName: '${appName}-github-${githubEnvironment}'
-}
-
-// ---------------------------------------------------------------------------
-// Service principal
+// Parameters (preserved for documentation — not compiled)
 // ---------------------------------------------------------------------------
 
-resource servicePrincipal 'Microsoft.Graph/servicePrincipals@v1.0' = {
-  appId: adApp.appId
-}
+// @description('Short application name — used to label the app registration.')
+// param appName string
+
+// @description('GitHub organisation or user that owns the repository.')
+// param githubOrg string
+
+// @description('GitHub repository name (without the org prefix).')
+// param githubRepo string
+
+// @description('GitHub Actions environment name this credential is scoped to.')
+// @allowed(['production', 'staging', 'preview'])
+// param githubEnvironment string
+
+// @description('Resource ID of the project resource group. The service principal receives Contributor on this scope.')
+// param resourceGroupId string
+
+// @description('Resource ID of the project ACR. The service principal receives AcrPush on this scope.')
+// param registryId string
 
 // ---------------------------------------------------------------------------
-// Federated credential
+// Intended resource topology (implemented in configure_cloud via Graph + ARM APIs)
 // ---------------------------------------------------------------------------
 
-resource federatedCredential 'Microsoft.Graph/applications/federatedIdentityCredentials@v1.0' = {
-  parent: adApp
-  name: '${appName}-${githubEnvironment}-fic'
-  subject: 'repo:${githubOrg}/${githubRepo}:environment:${githubEnvironment}'
-  issuer: 'https://token.actions.githubusercontent.com'
-  audiences: [
-    'api://AzureADTokenExchange'
-  ]
-  description: 'GitHub Actions OIDC trust for ${githubOrg}/${githubRepo} ${githubEnvironment} environment'
-}
+// 1. Azure AD app registration
+//    POST https://graph.microsoft.com/v1.0/applications
+//    { displayName: '{appName}-github-{githubEnvironment}',
+//      uniqueName: '{appName}-github-{githubEnvironment}' }
+
+// 2. Service principal
+//    POST https://graph.microsoft.com/v1.0/servicePrincipals
+//    { appId: <app.appId> }
+
+// 3. OIDC federated credential
+//    POST https://graph.microsoft.com/v1.0/applications/{app.id}/federatedIdentityCredentials
+//    { name: '{appName}-{githubEnvironment}-fic',
+//      issuer: 'https://token.actions.githubusercontent.com',
+//      subject: 'repo:{githubOrg}/{githubRepo}:environment:{githubEnvironment}',
+//      audiences: ['api://AzureADTokenExchange'] }
+
+// 4. Contributor role on resource group
+//    PUT https://management.azure.com/{resourceGroupId}/providers/
+//        Microsoft.Authorization/roleAssignments/{deterministicGuid}
+//    { properties: { roleDefinitionId: '.../b24988ac-...', principalId: <sp.id> } }
+
+// 5. AcrPush role on ACR
+//    PUT https://management.azure.com/{registryId}/providers/
+//        Microsoft.Authorization/roleAssignments/{deterministicGuid}
+//    { properties: { roleDefinitionId: '.../8311e382-...', principalId: <sp.id> } }
 
 // ---------------------------------------------------------------------------
-// Contributor role on the project resource group
+// Outputs (returned by configure_cloud — not from a Bicep deployment)
 // ---------------------------------------------------------------------------
 
-var contributorRoleDefinitionId = 'b24988ac-6180-42a0-ab88-20f7382dd24c'
-
-resource contributorAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  // Scope is expressed as the resource group resource ID.
-  // In Bicep, existing resources at subscription scope need a resourceGroup() reference;
-  // since this template is deployed at the resource group level, we use resourceGroup().id.
-  scope: resourceGroup()
-  name: guid(resourceGroupId, servicePrincipal.id, contributorRoleDefinitionId)
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', contributorRoleDefinitionId)
-    principalId: servicePrincipal.id
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// ---------------------------------------------------------------------------
-// AcrPush role on the project Container Registry
-// ---------------------------------------------------------------------------
-
-var acrPushRoleDefinitionId = '8311e382-0749-4cb8-b61a-304f252e45ec'
-
-resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
-  // Extract the ACR resource name from the fully-qualified resource ID.
-  // registryId format: /subscriptions/.../resourceGroups/.../providers/Microsoft.ContainerRegistry/registries/<name>
-  name: last(split(registryId, '/'))
-}
-
-resource acrPushAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: acr
-  name: guid(registryId, servicePrincipal.id, acrPushRoleDefinitionId)
-  properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPushRoleDefinitionId)
-    principalId: servicePrincipal.id
-    principalType: 'ServicePrincipal'
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Outputs
-// ---------------------------------------------------------------------------
-
-@description('Azure AD application (client) ID. Store as AZURE_CLIENT_ID in the matching GitHub environment secret (preview / staging / production).')
-output clientId string = adApp.appId
-
-@description('Service principal object ID.')
-output principalId string = servicePrincipal.id
-
-@description('Azure AD tenant ID. Store as AZURE_TENANT_ID in GitHub secrets (shared across environments).')
-output tenantId string = tenant().tenantId
+// clientId  — app.appId  → stored as AZURE_CLIENT_ID on the GitHub environment
+// principalId — sp.id    → used for role assignment; returned for verification
+// tenantId  — from JWT tid claim → stored as AZURE_TENANT_ID on all environments

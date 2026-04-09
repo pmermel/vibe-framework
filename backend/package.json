@@ -6,6 +6,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
+    "postbuild": "mkdir -p dist/infrastructure && cp ../infrastructure/container-apps-env.json dist/infrastructure/container-apps-env.json",
+    "predev": "mkdir -p src/infrastructure && cp ../infrastructure/container-apps-env.json src/infrastructure/container-apps-env.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "lint": "echo 'lint not configured yet' && exit 0",
@@ -13,6 +15,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@azure/arm-resources": "^5.0.0",
+    "@azure/identity": "^4.13.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@octokit/auth-app": "^8.2.0",
     "@octokit/rest": "^22.0.1",
