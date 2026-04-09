@@ -38,7 +38,7 @@ for env in preview staging production; do
     --method PUT \
     -H "Accept: application/vnd.github+json" \
     "/repos/$FULL_REPO/environments/$env" \
-    --silent || true
+    --silent
 done
 
 echo "→ Setting up OIDC federated credential for GitHub Actions"
