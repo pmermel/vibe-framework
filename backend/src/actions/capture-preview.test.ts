@@ -23,10 +23,14 @@ import { getGithubClient } from "../lib/github-client.js";
 
 function makeMockOctokit(overrides: Record<string, unknown> = {}) {
   return {
-    gists: {
-      create: vi.fn().mockResolvedValue({
-        data: { id: "abc123" },
-      }),
+    git: {
+      // Screenshots branch exists by default — getRef resolves.
+      getRef: vi.fn().mockResolvedValue({ data: { object: { sha: "branch-sha" } } }),
+      createRef: vi.fn().mockResolvedValue({}),
+    },
+    repos: {
+      get: vi.fn().mockResolvedValue({ data: { default_branch: "main" } }),
+      createOrUpdateFileContents: vi.fn().mockResolvedValue({ data: {} }),
     },
     issues: {
       createComment: vi.fn().mockResolvedValue({
@@ -116,7 +120,7 @@ describe("capturePreview — param validation", () => {
 // ---------------------------------------------------------------------------
 
 describe("capturePreview — happy path", () => {
-  it("returns posted:true with screenshot_url and comment metadata", async () => {
+  it("returns posted:true with screenshot_url pointing to raw.githubusercontent.com", async () => {
     const result = (await capturePreview({
       url: "https://preview.example.com",
       github_repo: "owner/repo",
@@ -125,14 +129,15 @@ describe("capturePreview — happy path", () => {
 
     expect(result.posted).toBe(true);
     expect(result.status).toBe("captured");
-    expect(result.screenshot_url).toContain("gist.githubusercontent.com");
-    expect(result.screenshot_url).toContain("abc123");
+    expect(result.screenshot_url).toContain("raw.githubusercontent.com");
+    expect(result.screenshot_url).toContain("owner/repo");
+    expect(result.screenshot_url).toContain("screenshots");
     expect(result.comment_id).toBe(888);
     expect(result.comment_url).toContain("issuecomment-888");
     expect(result.size_bytes).toBeGreaterThan(0);
   });
 
-  it("creates a Gist with a PNG filename containing the pr_number", async () => {
+  it("commits a PNG file whose path contains the pr_number", async () => {
     const mockOctokit = makeMockOctokit();
     vi.mocked(getGithubClient).mockReturnValue(mockOctokit as never);
 
@@ -142,12 +147,13 @@ describe("capturePreview — happy path", () => {
       pr_number: 42,
     });
 
-    const gistCall = mockOctokit.gists.create.mock.calls[0][0] as Record<string, unknown>;
-    expect(gistCall.public).toBe(true);
-    expect(Object.keys(gistCall.files as object)).toContain("preview-pr-42.png");
+    const uploadCall = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0] as Record<string, unknown>;
+    expect(typeof uploadCall.path).toBe("string");
+    expect(uploadCall.path as string).toContain("pr-42");
+    expect(uploadCall.branch).toBe("screenshots");
   });
 
-  it("posts a PR comment containing the Gist image URL", async () => {
+  it("posts a PR comment containing the repo-hosted image URL", async () => {
     const mockOctokit = makeMockOctokit();
     vi.mocked(getGithubClient).mockReturnValue(mockOctokit as never);
 
@@ -162,7 +168,7 @@ describe("capturePreview — happy path", () => {
     expect(commentCall.repo).toBe("myrepo");
     expect(commentCall.issue_number).toBe(7);
     expect(commentCall.body).toContain("![Preview screenshot]");
-    expect(commentCall.body).toContain("gist.githubusercontent.com");
+    expect(commentCall.body).toContain("raw.githubusercontent.com");
   });
 
   it("uses default mobile viewport (390x844) when none provided", async () => {
@@ -185,6 +191,46 @@ describe("capturePreview — happy path", () => {
 
     expect(mockPage.setViewportSize).toHaveBeenCalledWith({ width: 390, height: 844 });
   });
+
+  it("creates the screenshots branch when it does not yet exist", async () => {
+    const notFoundError = Object.assign(new Error("Not Found"), { status: 404 });
+    // getRef is called twice: first for the screenshots branch (404), then
+    // for the default branch to get the SHA to branch from (resolves).
+    const mockGetRef = vi.fn()
+      .mockRejectedValueOnce(notFoundError)
+      .mockResolvedValueOnce({ data: { object: { sha: "default-sha" } } });
+
+    const mockOctokit = makeMockOctokit({
+      git: {
+        getRef: mockGetRef,
+        createRef: vi.fn().mockResolvedValue({}),
+      },
+    });
+    vi.mocked(getGithubClient).mockReturnValue(mockOctokit as never);
+
+    await capturePreview({
+      url: "https://preview.example.com",
+      github_repo: "owner/repo",
+      pr_number: 1,
+    });
+
+    expect(mockOctokit.git.createRef).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: "refs/heads/screenshots" })
+    );
+  });
+
+  it("skips branch creation when screenshots branch already exists", async () => {
+    const mockOctokit = makeMockOctokit();
+    vi.mocked(getGithubClient).mockReturnValue(mockOctokit as never);
+
+    await capturePreview({
+      url: "https://preview.example.com",
+      github_repo: "owner/repo",
+      pr_number: 1,
+    });
+
+    expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -192,10 +238,11 @@ describe("capturePreview — happy path", () => {
 // ---------------------------------------------------------------------------
 
 describe("capturePreview — error paths", () => {
-  it("surfaces Gist creation errors to the caller", async () => {
+  it("surfaces screenshot upload errors to the caller", async () => {
     const mockOctokit = makeMockOctokit({
-      gists: {
-        create: vi.fn().mockRejectedValue(new Error("Gist API 403")),
+      repos: {
+        get: vi.fn().mockResolvedValue({ data: { default_branch: "main" } }),
+        createOrUpdateFileContents: vi.fn().mockRejectedValue(new Error("Upload API 403")),
       },
     });
     vi.mocked(getGithubClient).mockReturnValue(mockOctokit as never);
@@ -206,7 +253,7 @@ describe("capturePreview — error paths", () => {
         github_repo: "owner/repo",
         pr_number: 1,
       })
-    ).rejects.toThrow("Gist API 403");
+    ).rejects.toThrow("Upload API 403");
   });
 
   it("surfaces PR comment errors to the caller", async () => {
@@ -224,5 +271,25 @@ describe("capturePreview — error paths", () => {
         pr_number: 1,
       })
     ).rejects.toThrow("Comment API 422");
+  });
+
+  it("re-throws non-404 getRef errors without creating the branch", async () => {
+    const serverError = Object.assign(new Error("GitHub API 500"), { status: 500 });
+    const mockOctokit = makeMockOctokit({
+      git: {
+        getRef: vi.fn().mockRejectedValue(serverError),
+        createRef: vi.fn(),
+      },
+    });
+    vi.mocked(getGithubClient).mockReturnValue(mockOctokit as never);
+
+    await expect(
+      capturePreview({
+        url: "https://preview.example.com",
+        github_repo: "owner/repo",
+        pr_number: 1,
+      })
+    ).rejects.toThrow("GitHub API 500");
+    expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
   });
 });
