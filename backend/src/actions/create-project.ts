@@ -179,6 +179,18 @@ export async function createProject(params: Record<string, unknown>): Promise<un
     parents: [baseSha],
   });
 
+  // Create the develop branch from the scaffold commit (not baseSha / the empty init
+  // commit) so that develop already contains the generated project from day one.
+  // Feature branches created after the bootstrap PR merges will have the correct base tree.
+  // This must happen before the bootstrap PR is opened so that future feature PRs can
+  // target develop immediately after the bootstrap PR is merged.
+  await octokit.git.createRef({
+    owner: config.github_owner,
+    repo: config.name,
+    ref: "refs/heads/develop",
+    sha: commitResponse.data.sha,
+  });
+
   // Create the bootstrap branch pointing at the new commit
   const bootstrapBranch = "bootstrap/vibe-setup";
   await octokit.git.createRef({
