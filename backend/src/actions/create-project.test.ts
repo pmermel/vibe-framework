@@ -203,6 +203,36 @@ describe("createProject — nextjs happy path (user owner)", () => {
       })
     ).rejects.toThrow('github_owner "acme" does not match the authenticated user "other-user"');
   });
+
+  it("creates develop branch (from base SHA) and bootstrap branch (from commit SHA) via two createRef calls", async () => {
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+
+    // createRef must be called exactly twice: once for develop, once for bootstrap/vibe-setup
+    expect(mockOctokit.git.createRef).toHaveBeenCalledTimes(2);
+
+    // First call: develop branch pointing at the base commit SHA (not the new scaffold commit)
+    expect(mockOctokit.git.createRef).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        ref: "refs/heads/develop",
+        sha: "commit-abc123",
+      })
+    );
+
+    // Second call: bootstrap branch pointing at the new scaffold commit SHA
+    expect(mockOctokit.git.createRef).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        ref: "refs/heads/bootstrap/vibe-setup",
+        sha: "commit-sha",
+      })
+    );
+  });
 });
 
 describe("createProject — nextjs happy path (org owner)", () => {
