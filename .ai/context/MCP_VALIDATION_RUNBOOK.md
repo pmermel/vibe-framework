@@ -3,14 +3,28 @@
 This runbook records the current MCP validation status for `vibe-framework` and the
 steps required to close the validation gate in `plan.md` and `BOOTSTRAP_CONTRACTS.md`.
 
-## Current Status
+## Current Status — Gate Cleared ✅
 
 - ✅ Direct REST reachability proven (`GET /health`, `POST /action`)
 - ✅ `/mcp` endpoint implemented (issue #66) — `POST /mcp` handles MCP
   StreamableHTTP transport; all 8 actions are registered as tools
 - ✅ OAuth discovery stubs in place so provider auth handshake completes
-- 🔲 Provider validation: Claude Code → `/mcp` not yet run
-- 🔲 Provider validation: Codex → `/mcp` not yet run
+- ✅ Provider validation: Claude Code → passed (issue #56)
+- ✅ Provider validation: Codex Desktop → passed (issue #56)
+
+## Validation Outcome
+
+| Provider | Result | Notes |
+|---|---|---|
+| Claude Code | ✅ Pass | OAuth + tools/list (8 tools) + post_status call succeeded |
+| Codex Desktop | ✅ Pass | OAuth + tools/list (8 tools) + tool call succeeded |
+
+**Architecture gate: cleared.** Both providers reach the same `/mcp` endpoint through standard OAuth 2.0 + StreamableHTTP transport. No provider-specific changes required.
+
+**Caveats:**
+- Validation was run against a localtunnel-exposed local backend (not a deployed instance). Localtunnel was flaky — ngrok recommended for future validation runs.
+- Auth used development stubs (`vibe-dev-token`) — no real credential validation. Real OAuth must be implemented before the backend is exposed in production.
+- `/mcp` is disabled in production (returns 501) until real OAuth is wired. REST `POST /action` is the only live production path today.
 
 ---
 
