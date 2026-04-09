@@ -2,30 +2,33 @@
 
 Defines the contracts for all bootstrap actions in vibe-framework. Both providers must implement or invoke these contracts identically.
 
-## Implementation Status (v0.1 — stubs only)
+## Implementation Status
 
-All actions documented below are currently **param-validation stubs**. They:
-- Accept and validate the documented params (Zod schemas enforced — invalid params → 400)
-- Return `{ status: "not_implemented" }` for any valid request
-- Do **not** make GitHub API calls, Azure API calls, or any external requests
+| Action | Status | Notes |
+|---|---|---|
+| `create_project` (nextjs + container-app) | ✅ Implemented | Real scaffold + GitHub repo + bootstrap PR; react-vite/node-api deferred |
+| `configure_repo` | ✅ Implemented | Branch protections, environments, labels, OIDC secrets via GitHub App |
+| `configure_cloud` | ✅ Implemented | Deploys `container-apps-env.json` ARM template; provisions OIDC credentials via Microsoft Graph REST API; assigns Contributor + AcrPush roles via ARM REST; idempotent (check-before-create + deterministic GUID names); returns Azure outputs for `configure_repo` |
+| `post_status` | ✅ Implemented | Posts real GitHub PR comment via `issues.createComment`; returns `posted: true`, `comment_id`, `comment_url` |
+| `capture_preview` | ⚠️ Partial | Playwright screenshot captured and returned; posting deferred — no GitHub-App-compatible storage available without Azure Blob Storage; returns `posted: false`, `posted_deferred_reason: "external_storage_required"` |
+| `import_project` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
+| `bootstrap_framework` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
+| `generate_assets` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
 
-Full implementation is planned for Phase 2 (`configure_cloud`, `configure_repo`) and
-Phase 3 (`create_project`, `import_project`). This document describes the **intended
-contract**, not the current behaviour. Do not assume any action has side effects until
-its implementation status is updated here.
+Stubs accept and validate the documented params (Zod schemas enforced — invalid params → 400) but return `{ status: "not_implemented" }` for valid requests without making external calls.
 
 ## Validation Gates
 
 These gates prevent the framework from expanding backend surface area faster than the core architecture is proven.
 
-1. **MCP connectivity gate**
-   - Before broadening backend action implementation, prove that a live deployed backend can be invoked from both Codex and Claude through MCP using a low-risk action such as `post_status` or `capture_preview`.
-   - Direct curl checks against `/health` and `/action` are useful smoke tests, but they do not satisfy this gate by themselves.
-   - The passing condition is a real remote MCP server endpoint that both providers can register and invoke over standard MCP transport.
-   - If either provider cannot invoke the backend reliably, treat that as an architecture blocker rather than continuing to add action implementations on assumption.
-2. **Walking skeleton gate**
-   - Before completing all backend stubs, prove one complete vertical slice: `create_project` -> real repository -> bootstrap PR for the validated Next.js path.
-   - The first proof may defer full Azure provisioning, but the GitHub flow must be real and observable entirely through GitHub state.
+1. **MCP connectivity gate** ✅ Cleared (issue #56)
+   - Proved that a live deployed backend can be invoked from both Codex and Claude through MCP.
+   - Validated: Claude Code and Codex Desktop both invoked backend actions via MCP over localtunnel.
+   - Note: MCP is disabled in production (501) until real OAuth is wired. Dev-mode validation only.
+   - ngrok recommended over localtunnel for future validation runs (more stable).
+2. **Walking skeleton gate** ✅ Cleared (issue #55)
+   - Proved one complete vertical slice: `create_project` → real GitHub repository → bootstrap PR.
+   - Important scope note: this gate validates the GitHub repo/PR creation flow only. Full end-to-end bootstrap (Azure provisioning via `configure_cloud`, GitHub Actions OIDC pipeline, PR enrichment loop) is Phase 3 work and not part of the gate definition.
 
 ## GitHub App Setup Sub-Flow
 
