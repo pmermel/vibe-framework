@@ -68,10 +68,13 @@ function getTenantIdFromToken(token: string): string {
  * - Deploys `infrastructure/container-apps-env.json` (pre-compiled ARM template) —
  *   Container Apps environment, ACR, staging and production Container Apps
  * - For each GitHub Actions environment (preview, staging, production):
- *   - Creates an Azure AD app registration via Microsoft Graph API
- *   - Creates a service principal for the app
+ *   - Creates an Azure AD app registration via Microsoft Graph API (idempotent:
+ *     looks up by uniqueName before creating — safe to retry after partial failures)
+ *   - Creates a service principal for the app (idempotent: looks up by appId)
  *   - Adds an OIDC federated credential linking the app to the GitHub environment
+ *     (idempotent: looks up by name before creating)
  *   - Grants Contributor on the resource group and AcrPush on ACR via ARM REST API
+ *     (idempotent: deterministic GUID names, 409 Conflict treated as success)
  * - Returns Azure outputs (clientIds, tenantId, ACR login server, FQDNs) for
  *   the caller to pass to `configure_repo` for GitHub secret storage
  *
@@ -184,52 +187,92 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
 
   for (const env of GITHUB_ENVIRONMENTS) {
     const appDisplayName = `${project_name}-github-${env}`;
+    const ficName = `${project_name}-${env}-fic`;
 
-    // Create Azure AD app registration
-    const appRes = await fetch(`${GRAPH_API}/v1.0/applications`, {
-      method: "POST",
-      headers: graphHeaders,
-      body: JSON.stringify({
-        displayName: appDisplayName,
-        uniqueName: appDisplayName,
-      }),
-    });
-    if (!appRes.ok) {
-      const err = await appRes.text();
-      throw new Error(`Graph API: failed to create app registration for ${env}: ${err}`);
+    // --- App registration (idempotent: look up by uniqueName before creating) ---
+    const existingAppsRes = await fetch(
+      `${GRAPH_API}/v1.0/applications?$filter=uniqueName eq '${appDisplayName}'`,
+      { headers: graphHeaders }
+    );
+    if (!existingAppsRes.ok) {
+      const err = await existingAppsRes.text();
+      throw new Error(`Graph API: failed to look up app registration for ${env}: ${err}`);
     }
-    const app = await appRes.json() as Record<string, string>;
+    const existingApps = await existingAppsRes.json() as { value: Array<Record<string, string>> };
 
-    // Create service principal for the app registration
-    const spRes = await fetch(`${GRAPH_API}/v1.0/servicePrincipals`, {
-      method: "POST",
-      headers: graphHeaders,
-      body: JSON.stringify({ appId: app.appId }),
-    });
-    if (!spRes.ok) {
-      const err = await spRes.text();
-      throw new Error(`Graph API: failed to create service principal for ${env}: ${err}`);
-    }
-    const sp = await spRes.json() as Record<string, string>;
-
-    // Create OIDC federated credential linking the SP to the GitHub Actions environment
-    const ficRes = await fetch(
-      `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials`,
-      {
+    let app: Record<string, string>;
+    if (existingApps.value.length > 0) {
+      app = existingApps.value[0];
+    } else {
+      const appRes = await fetch(`${GRAPH_API}/v1.0/applications`, {
         method: "POST",
         headers: graphHeaders,
-        body: JSON.stringify({
-          name: `${project_name}-${env}-fic`,
-          issuer: "https://token.actions.githubusercontent.com",
-          subject: `repo:${githubOrg}/${githubRepoName}:environment:${env}`,
-          audiences: ["api://AzureADTokenExchange"],
-          description: `GitHub Actions OIDC trust for ${githubOrg}/${githubRepoName} ${env} environment`,
-        }),
+        body: JSON.stringify({ displayName: appDisplayName, uniqueName: appDisplayName }),
+      });
+      if (!appRes.ok) {
+        const err = await appRes.text();
+        throw new Error(`Graph API: failed to create app registration for ${env}: ${err}`);
       }
+      app = await appRes.json() as Record<string, string>;
+    }
+
+    // --- Service principal (idempotent: look up by appId before creating) ---
+    const existingSPsRes = await fetch(
+      `${GRAPH_API}/v1.0/servicePrincipals?$filter=appId eq '${app.appId}'`,
+      { headers: graphHeaders }
     );
-    if (!ficRes.ok) {
-      const err = await ficRes.text();
-      throw new Error(`Graph API: failed to create federated credential for ${env}: ${err}`);
+    if (!existingSPsRes.ok) {
+      const err = await existingSPsRes.text();
+      throw new Error(`Graph API: failed to look up service principal for ${env}: ${err}`);
+    }
+    const existingSPs = await existingSPsRes.json() as { value: Array<Record<string, string>> };
+
+    let sp: Record<string, string>;
+    if (existingSPs.value.length > 0) {
+      sp = existingSPs.value[0];
+    } else {
+      const spRes = await fetch(`${GRAPH_API}/v1.0/servicePrincipals`, {
+        method: "POST",
+        headers: graphHeaders,
+        body: JSON.stringify({ appId: app.appId }),
+      });
+      if (!spRes.ok) {
+        const err = await spRes.text();
+        throw new Error(`Graph API: failed to create service principal for ${env}: ${err}`);
+      }
+      sp = await spRes.json() as Record<string, string>;
+    }
+
+    // --- Federated credential (idempotent: look up by name before creating) ---
+    const existingFicsRes = await fetch(
+      `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials?$filter=name eq '${ficName}'`,
+      { headers: graphHeaders }
+    );
+    if (!existingFicsRes.ok) {
+      const err = await existingFicsRes.text();
+      throw new Error(`Graph API: failed to look up federated credential for ${env}: ${err}`);
+    }
+    const existingFics = await existingFicsRes.json() as { value: unknown[] };
+
+    if (existingFics.value.length === 0) {
+      const ficRes = await fetch(
+        `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials`,
+        {
+          method: "POST",
+          headers: graphHeaders,
+          body: JSON.stringify({
+            name: ficName,
+            issuer: "https://token.actions.githubusercontent.com",
+            subject: `repo:${githubOrg}/${githubRepoName}:environment:${env}`,
+            audiences: ["api://AzureADTokenExchange"],
+            description: `GitHub Actions OIDC trust for ${githubOrg}/${githubRepoName} ${env} environment`,
+          }),
+        }
+      );
+      if (!ficRes.ok) {
+        const err = await ficRes.text();
+        throw new Error(`Graph API: failed to create federated credential for ${env}: ${err}`);
+      }
     }
 
     // Assign Contributor role on the resource group (deterministic GUID = idempotent)

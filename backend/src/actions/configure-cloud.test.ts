@@ -47,11 +47,16 @@ vi.mock("fs", () => ({
 }));
 
 // Mock global fetch — covers Graph API (app registrations, SPs, FICs) and
-// ARM REST API (role assignments). All mocks default to success.
+// ARM REST API (role assignments). All mocks default to "not found then create" — the
+// idempotent lookup (GET) returns { value: [] }, triggering the create (POST) path.
 const mockFetch = vi.fn().mockImplementation((url: string, opts?: { method?: string }) => {
   const method = opts?.method ?? "GET";
   const urlStr = String(url);
 
+  // Idempotency lookups — return empty list so create path is exercised by default
+  if (method === "GET" && urlStr.includes("$filter")) {
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+  }
   if (urlStr.includes("graph.microsoft.com/v1.0/applications") && method === "POST" && !urlStr.includes("federatedIdentity")) {
     return Promise.resolve({
       ok: true,
@@ -142,13 +147,14 @@ describe("configureCloud — happy path (container-app)", () => {
     azure_region: "eastus2",
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCreateOrUpdateAndWait.mockResolvedValue(mockEnvDeploymentResult);
-    mockRGCreateOrUpdate.mockResolvedValue({});
-    mockFetch.mockImplementation((url: string, opts?: { method?: string }) => {
+  function makeDefaultFetch() {
+    return (url: string, opts?: { method?: string }) => {
       const method = opts?.method ?? "GET";
       const urlStr = String(url);
+      // Idempotency lookups — empty by default so the create path runs
+      if (method === "GET" && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+      }
       if (urlStr.includes("graph.microsoft.com/v1.0/applications") && method === "POST" && !urlStr.includes("federatedIdentity")) {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "app-object-id", appId: "client-id-mock" }) });
       }
@@ -162,7 +168,14 @@ describe("configureCloud — happy path (container-app)", () => {
         return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({}) });
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-    });
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreateOrUpdateAndWait.mockResolvedValue(mockEnvDeploymentResult);
+    mockRGCreateOrUpdate.mockResolvedValue({});
+    mockFetch.mockImplementation(makeDefaultFetch());
   });
 
   it("returns status:provisioned with resource group and region", async () => {
@@ -265,6 +278,75 @@ describe("configureCloud — happy path (container-app)", () => {
       expect.objectContaining({ location: "westus2" })
     );
   });
+
+  // --- Idempotency tests ---
+
+  it("reuses an existing app registration when uniqueName already exists (no duplicate POST)", async () => {
+    // Simulate app already existing: GET returns it, no POST should be made
+    mockFetch.mockImplementation((url: string, opts?: { method?: string }) => {
+      const method = opts?.method ?? "GET";
+      const urlStr = String(url);
+      if (method === "GET" && urlStr.includes("applications") && urlStr.includes("$filter") && !urlStr.includes("federatedIdentity")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [{ id: "existing-app-id", appId: "existing-client-id" }] }) });
+      }
+      if (method === "GET" && urlStr.includes("servicePrincipals") && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [{ id: "existing-sp-id" }] }) });
+      }
+      if (method === "GET" && urlStr.includes("federatedIdentityCredentials") && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [{}] }) });
+      }
+      if (urlStr.includes("roleAssignments") && method === "PUT") {
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({}) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const result = await configureCloud(validParams) as Record<string, unknown>;
+    expect(result.status).toBe("provisioned");
+
+    // No POST to /applications should have been made (reused existing)
+    const calls = mockFetch.mock.calls as Array<[string, { method?: string }]>;
+    const appPosts = calls.filter(
+      ([url, opts]) =>
+        String(url).includes("graph.microsoft.com/v1.0/applications") &&
+        !String(url).includes("federatedIdentity") &&
+        opts?.method === "POST"
+    );
+    expect(appPosts).toHaveLength(0);
+  });
+
+  it("skips federated credential creation when FIC with matching name already exists", async () => {
+    // App and SP not found (will create), FIC already exists (should skip POST)
+    mockFetch.mockImplementation((url: string, opts?: { method?: string }) => {
+      const method = opts?.method ?? "GET";
+      const urlStr = String(url);
+      if (method === "GET" && urlStr.includes("federatedIdentityCredentials") && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [{}] }) });
+      }
+      if (method === "GET" && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+      }
+      if (urlStr.includes("graph.microsoft.com/v1.0/applications") && method === "POST" && !urlStr.includes("federatedIdentity")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "app-object-id", appId: "client-id-mock" }) });
+      }
+      if (urlStr.includes("servicePrincipals") && method === "POST") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "sp-object-id-mock" }) });
+      }
+      if (urlStr.includes("roleAssignments") && method === "PUT") {
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({}) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    await configureCloud(validParams);
+
+    // No POST to /federatedIdentityCredentials should have been made
+    const calls = mockFetch.mock.calls as Array<[string, { method?: string }]>;
+    const ficPosts = calls.filter(
+      ([url, opts]) => String(url).includes("federatedIdentityCredentials") && opts?.method === "POST"
+    );
+    expect(ficPosts).toHaveLength(0);
+  });
 });
 
 describe("configureCloud — error propagation", () => {
@@ -274,13 +356,13 @@ describe("configureCloud — error propagation", () => {
     azure_subscription_id: "sub-123",
   };
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockCreateOrUpdateAndWait.mockResolvedValue(mockEnvDeploymentResult);
-    mockRGCreateOrUpdate.mockResolvedValue({});
-    mockFetch.mockImplementation((url: string, opts?: { method?: string }) => {
+  function makeDefaultFetch() {
+    return (url: string, opts?: { method?: string }) => {
       const method = opts?.method ?? "GET";
       const urlStr = String(url);
+      if (method === "GET" && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+      }
       if (urlStr.includes("graph.microsoft.com/v1.0/applications") && method === "POST" && !urlStr.includes("federatedIdentity")) {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "app-object-id", appId: "client-id-mock" }) });
       }
@@ -294,7 +376,14 @@ describe("configureCloud — error propagation", () => {
         return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({}) });
       }
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-    });
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreateOrUpdateAndWait.mockResolvedValue(mockEnvDeploymentResult);
+    mockRGCreateOrUpdate.mockResolvedValue({});
+    mockFetch.mockImplementation(makeDefaultFetch());
   });
 
   it("surfaces ARM deployment errors", async () => {
@@ -302,22 +391,34 @@ describe("configureCloud — error propagation", () => {
     await expect(configureCloud(validParams)).rejects.toThrow("ARM deployment failed");
   });
 
-  it("surfaces Graph API app registration errors with a descriptive message", async () => {
-    // Allow first two fetch calls (token acquisition stubs) then fail the app creation
-    let callCount = 0;
+  it("surfaces Graph API lookup errors (GET) with a descriptive message", async () => {
+    // The first Graph call is now a GET lookup — fail it to test error propagation
     mockFetch.mockImplementation((url: string, opts?: { method?: string }) => {
-      callCount++;
       const method = opts?.method ?? "GET";
       const urlStr = String(url);
-      // Fail the first Graph app creation call
-      if (callCount === 1 && urlStr.includes("applications") && method === "POST") {
-        return Promise.resolve({
-          ok: false,
-          status: 403,
-          text: () => Promise.resolve("Insufficient privileges"),
-        });
+      if (method === "GET" && urlStr.includes("applications") && urlStr.includes("$filter") && !urlStr.includes("federatedIdentity")) {
+        return Promise.resolve({ ok: false, status: 403, text: () => Promise.resolve("Insufficient privileges") });
       }
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "x", appId: "y", tid: "t" }) });
+      if (method === "GET" && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "x", appId: "y" }) });
+    });
+    await expect(configureCloud(validParams)).rejects.toThrow("Graph API: failed to look up app registration");
+  });
+
+  it("surfaces Graph API app creation errors with a descriptive message", async () => {
+    // Lookup returns empty (not found), then create fails
+    mockFetch.mockImplementation((url: string, opts?: { method?: string }) => {
+      const method = opts?.method ?? "GET";
+      const urlStr = String(url);
+      if (method === "GET" && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+      }
+      if (urlStr.includes("graph.microsoft.com/v1.0/applications") && method === "POST" && !urlStr.includes("federatedIdentity")) {
+        return Promise.resolve({ ok: false, status: 403, text: () => Promise.resolve("Insufficient privileges") });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
     });
     await expect(configureCloud(validParams)).rejects.toThrow("Graph API: failed to create app registration");
   });
@@ -326,6 +427,9 @@ describe("configureCloud — error propagation", () => {
     mockFetch.mockImplementation((url: string, opts?: { method?: string }) => {
       const method = opts?.method ?? "GET";
       const urlStr = String(url);
+      if (method === "GET" && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+      }
       if (urlStr.includes("graph.microsoft.com/v1.0/applications") && method === "POST" && !urlStr.includes("federatedIdentity")) {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "app-object-id", appId: "client-id-mock" }) });
       }
