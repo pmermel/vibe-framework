@@ -8,6 +8,20 @@ vi.mock("./actions/bootstrap-framework.js", () => ({
   bootstrapFramework: vi.fn(),
 }));
 
+// Mocked so configure_cloud dispatch tests never call real Azure.
+vi.mock("./actions/configure-cloud.js", () => ({
+  configureCloud: vi.fn().mockResolvedValue({ status: "provisioned" }),
+}));
+
+// configure-repo and configure-cloud both import libsodium-wrappers.
+// Mock it here so the handler module can load without a real crypto environment.
+vi.mock("libsodium-wrappers", () => ({
+  default: {
+    ready: Promise.resolve(),
+    crypto_box_seal: vi.fn().mockReturnValue(new Uint8Array([1, 2, 3])),
+  },
+}));
+
 // Mocked so create_project dispatch tests never make real GitHub API calls.
 vi.mock("./lib/github-client.js", () => ({
   getGithubClient: () => ({
@@ -177,6 +191,7 @@ describe("handleAction — dispatch coverage", () => {
       params: {
         project_name: "my-app",
         github_repo: "owner/my-app",
+        azure_subscription_id: "sub-123",
       },
     });
     const { res, json } = makeRes();
