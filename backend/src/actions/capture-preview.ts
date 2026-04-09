@@ -16,14 +16,33 @@ const CapturePreviewParams = z.object({
 /**
  * capture_preview
  *
- * Takes a screenshot of a deployed preview URL using Playwright headless
- * browser and posts it as a comment on the GitHub PR.
+ * Takes a Playwright screenshot of a deployed preview URL at mobile viewport
+ * (390×844 — iPhone 14 Pro by default) to support the phone-first review workflow.
  *
- * Default viewport is mobile (390x844 — iPhone 14 Pro) to support
- * phone-first review workflow.
+ * Current status: PARTIAL — screenshot is captured and returned, but NOT posted
+ * to GitHub. Screenshot hosting requires external durable storage (Azure Blob
+ * Storage or similar) that is compatible with the GitHub App installation-token
+ * auth model and does not grow git history with binary blobs.
  *
- * Requires Playwright chromium installed in the backend container.
- * Run: npx playwright install chromium --with-deps
+ * Why not git-based hosting (commits to a screenshots branch):
+ * Every preview run permanently adds binary PNG blobs to the project repository
+ * with no automated cleanup. Screenshots are transient PR review artifacts, not
+ * source history, so git history is the wrong durability boundary.
+ *
+ * Why not GitHub Gist: POST /gists is user-token-only and is not callable with
+ * a GitHub App installation token, which is the auth model this framework uses.
+ *
+ * Posting is planned for Phase 3 once Azure Blob Storage is wired into the
+ * bootstrap path. When available, the action will upload the screenshot to Blob
+ * Storage and post a PR comment with the blob URL.
+ *
+ * Does NOT make any GitHub API calls in this partial implementation.
+ * Does NOT upload to Azure Blob Storage (deferred).
+ * Requires Playwright chromium: npx playwright install chromium --with-deps
+ *
+ * @param params - Must match `CapturePreviewParams` schema
+ * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400)
+ * @throws Playwright errors if the browser cannot load the URL
  */
 export async function capturePreview(params: Record<string, unknown>): Promise<unknown> {
   const parsed = CapturePreviewParams.safeParse(params);
@@ -33,24 +52,28 @@ export async function capturePreview(params: Record<string, unknown>): Promise<u
 
   const { url, github_repo, pr_number, viewport } = parsed.data;
 
+  // Take screenshot
   const browser = await chromium.launch();
+  let screenshot: Buffer;
   try {
     const page = await browser.newPage();
     await page.setViewportSize(viewport);
     await page.goto(url, { waitUntil: "networkidle", timeout: 30_000 });
-    const screenshot = await page.screenshot({ type: "png", fullPage: false });
-
-    // TODO: upload screenshot to Azure Blob Storage or GitHub as artifact
-    // TODO: post screenshot as PR comment via GitHub App
-    console.log(`Captured screenshot of ${url} for ${github_repo}#${pr_number} (${screenshot.length} bytes)`);
-
-    return {
-      url,
-      pr: `${github_repo}#${pr_number}`,
-      size_bytes: screenshot.length,
-      status: "captured",
-    };
+    screenshot = await page.screenshot({ type: "png", fullPage: false });
   } finally {
     await browser.close();
   }
+
+  return {
+    url,
+    github_repo,
+    pr_number,
+    size_bytes: screenshot.length,
+    status: "captured",
+    // posted remains false until Azure Blob Storage is available as a hosting path.
+    // Screenshot hosting via git commits causes unbounded binary blob growth.
+    // Screenshot hosting via GitHub Gist requires user tokens (not installation tokens).
+    posted: false,
+    posted_deferred_reason: "external_storage_required",
+  };
 }

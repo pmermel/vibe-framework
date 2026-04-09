@@ -39,6 +39,9 @@ vi.mock("./lib/github-client.js", () => ({
     },
     issues: {
       createLabel: vi.fn().mockResolvedValue({}),
+      createComment: vi.fn().mockResolvedValue({
+        data: { id: 1, html_url: "https://github.com/owner/repo/pull/1#issuecomment-1" },
+      }),
     },
     git: {
       getRef: vi.fn().mockResolvedValue({ data: { object: { sha: "abc" } } }),

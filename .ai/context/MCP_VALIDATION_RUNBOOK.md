@@ -92,7 +92,12 @@ curl -s -X POST <BASE_URL>/mcp \
   }'
 ```
 
-Expected: HTTP 200, `result.content[0].text` contains JSON with `"posted": false`.
+Expected: HTTP 200, `result.content[0].text` contains JSON.
+
+- **With valid GitHub App credentials configured:** `"posted": true`, `"comment_id": <n>`, `"comment_url": "<url>"` — a real comment is created on the PR.
+- **With `GITHUB_TOKEN=dummy` (dev smoke-test only):** the GitHub API returns a 401/403 and the action surfaces the error. The MCP transport still returns 200 with a structured error body — proving MCP connectivity even without valid credentials.
+
+For a standalone connectivity smoke-test, a GitHub API error is acceptable. For a full end-to-end validation, configure real GitHub App credentials and confirm `posted: true`.
 
 ---
 
@@ -127,7 +132,9 @@ Once authenticated, ask Claude to call `post_status`:
 > Call the vibe-backend post_status tool with github_repo "pmermel/vibe-framework",
 > pr_number 66, status "pending", message "MCP validation from Claude Code"
 
-Expected: `posted: false`, `status: "pending"`.
+Expected: `status: "pending"` and either:
+- `posted: true`, `comment_id: <n>`, `comment_url: "<url>"` if GitHub App credentials are configured, or
+- A GitHub API error (401/403) if running with `GITHUB_TOKEN=dummy` — MCP transport connectivity is still confirmed by the structured error response.
 
 Also test an error path — ask Claude to call post_status with missing required fields
 and confirm it surfaces the error message from the backend.
@@ -163,19 +170,19 @@ Post a comment on issue #56 with this template:
 ### Direct curl
 - [ ] GET /health → 200
 - [ ] POST /mcp tools/list → 200, 8 tools
-- [ ] POST /mcp tools/call post_status → 200, posted:false
+- [ ] POST /mcp tools/call post_status → 200, posted:true (or GitHub API error with dummy creds)
 
 ### Claude Code
 - [ ] OAuth discovery + auth completed
 - [ ] tools/list returns all 8 tools
-- [ ] post_status call succeeds (posted:false)
+- [ ] post_status call succeeds (posted:true with real creds; GitHub API error with dummy creds)
 - [ ] Error path (invalid params) surfaced correctly
 - [ ] Provider-specific caveats: <none / describe>
 
 ### Codex
 - [ ] OAuth discovery + auth completed
 - [ ] tools/list returns all 8 tools
-- [ ] post_status call succeeds (posted:false)
+- [ ] post_status call succeeds (posted:true with real creds; GitHub API error with dummy creds)
 - [ ] Error path (invalid params) surfaced correctly
 - [ ] Provider-specific caveats: <none / describe>
 
