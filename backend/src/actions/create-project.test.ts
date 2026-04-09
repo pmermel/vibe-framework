@@ -58,6 +58,27 @@ vi.mock("../lib/github-client.js", () => ({
 import { createProject } from "./create-project.js";
 
 // ---------------------------------------------------------------------------
+// Global env var management
+// Set AZURE_SUBSCRIPTION_ID for all tests so the subscription-resolution
+// path doesn't throw by default. Individual tests that want to test the
+// "not set" path must delete and restore it themselves.
+// ---------------------------------------------------------------------------
+
+const ORIGINAL_ENV = { ...process.env };
+
+beforeEach(() => {
+  process.env.AZURE_SUBSCRIPTION_ID = "default-sub-123";
+});
+
+afterEach(() => {
+  // Restore env to whatever it was before each test
+  Object.keys(process.env).forEach((key) => {
+    if (!(key in ORIGINAL_ENV)) delete process.env[key];
+  });
+  Object.assign(process.env, ORIGINAL_ENV);
+});
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -589,28 +610,38 @@ describe("createProject — cloud and repo orchestration", () => {
     expect(result.repo_configured).toBe(true);
   });
 
-  it("does not call configureCloud or configureRepo when azure_subscription_id is absent", async () => {
-    await createProject({
-      name: "my-app",
-      template: "nextjs",
-      github_owner: "acme-org",
-      approvers: ["alice"],
-    });
+  it("throws a clear error when azure_subscription_id is absent and AZURE_SUBSCRIPTION_ID env var is not set", async () => {
+    delete process.env.AZURE_SUBSCRIPTION_ID; // override the global beforeEach default
 
+    await expect(
+      createProject({
+        name: "my-app",
+        template: "nextjs",
+        github_owner: "acme-org",
+        approvers: ["alice"],
+      })
+    ).rejects.toThrow("azure_subscription_id is required");
+
+    // No GitHub or Azure resources should have been created
+    expect(mockOctokit.repos.createInOrg).not.toHaveBeenCalled();
     expect(mockConfigureCloud).not.toHaveBeenCalled();
-    expect(mockConfigureRepo).not.toHaveBeenCalled();
   });
 
-  it("returns cloud_provisioned:false and repo_configured:false when azure_subscription_id is absent", async () => {
+  it("reads subscription from AZURE_SUBSCRIPTION_ID env var when param is omitted", async () => {
+    process.env.AZURE_SUBSCRIPTION_ID = "env-sub-999"; // override the global default
+
     const result = (await createProject({
       name: "my-app",
       template: "nextjs",
       github_owner: "acme-org",
       approvers: ["alice"],
+      // no azure_subscription_id param
     })) as Record<string, unknown>;
 
-    expect(result.cloud_provisioned).toBe(false);
-    expect(result.repo_configured).toBe(false);
+    expect(mockConfigureCloud).toHaveBeenCalledWith(
+      expect.objectContaining({ azure_subscription_id: "env-sub-999" })
+    );
+    expect(result.cloud_provisioned).toBe(true);
   });
 
   it("does not call configureRepo when configureCloud returns not_implemented", async () => {
@@ -653,18 +684,20 @@ describe("createProject — cloud and repo orchestration", () => {
     expect(prUpdateCall.body).toContain("my-app-prod.eastus2.azurecontainerapps.io");
   });
 
-  it("opens PR with placeholder body and does not call pulls.update when no azure_subscription_id", async () => {
+  it("opens PR with placeholder body first, then updates it after provisioning succeeds", async () => {
+    // PR created with placeholder, then updated — both must be called
     await createProject({
       name: "my-app",
       template: "nextjs",
       github_owner: "acme-org",
       approvers: ["alice"],
+      azure_subscription_id: "sub-123",
     });
 
     const prCreateCall = mockOctokit.pulls.create.mock.calls[0]?.[0] as { body: string };
     expect(prCreateCall.body).toContain("Azure OIDC trust");
     expect(prCreateCall.body).not.toContain("azurecr.io");
-    expect(mockOctokit.pulls.update).not.toHaveBeenCalled();
+    expect(mockOctokit.pulls.update).toHaveBeenCalled();
   });
 
   it("posts error comment to PR and re-throws when configureCloud fails", async () => {

@@ -10,7 +10,25 @@ vi.mock("./actions/bootstrap-framework.js", () => ({
 
 // Mocked so configure_cloud dispatch tests never call real Azure.
 vi.mock("./actions/configure-cloud.js", () => ({
-  configureCloud: vi.fn().mockResolvedValue({ status: "provisioned" }),
+  configureCloud: vi.fn().mockResolvedValue({
+    status: "provisioned",
+    project_name: "my-app",
+    github_repo: "acme/my-app",
+    resource_group: "my-app-rg",
+    azure_region: "eastus2",
+    acr_login_server: "myappackr.azurecr.io",
+    acr_id: "/subscriptions/sub-123/resourceGroups/my-app-rg/providers/Microsoft.ContainerRegistry/registries/myappackr",
+    staging_fqdn: "my-app-staging.eastus2.azurecontainerapps.io",
+    production_fqdn: "my-app-prod.eastus2.azurecontainerapps.io",
+    oidc_client_ids: { preview: "c-preview", staging: "c-staging", production: "c-prod" },
+    tenant_id: "tenant-abc",
+    subscription_id: "sub-test-123",
+  }),
+}));
+
+// Mocked so create_project dispatch tests never call configure_repo directly.
+vi.mock("./actions/configure-repo.js", () => ({
+  configureRepo: vi.fn().mockResolvedValue({ configured: true }),
 }));
 
 // configure-repo and configure-cloud both import libsodium-wrappers.
@@ -55,7 +73,9 @@ vi.mock("./lib/github-client.js", () => ({
       create: vi.fn().mockResolvedValue({
         data: { html_url: "https://github.com/acme/my-app/pull/1", number: 1 },
       }),
+      update: vi.fn().mockResolvedValue({}),
     },
+    request: vi.fn().mockResolvedValue({}),
   }),
 }));
 
@@ -155,6 +175,7 @@ describe("handleAction — dispatch coverage", () => {
         template: "nextjs",
         github_owner: "acme",
         approvers: ["alice"],
+        azure_subscription_id: "sub-test-123",
       },
     });
     const { res, json } = makeRes();
