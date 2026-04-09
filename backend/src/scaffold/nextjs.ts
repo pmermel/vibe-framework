@@ -50,6 +50,7 @@ export function generateNextjsScaffold(params: {
     "src/app/layout.tsx": layout(name),
     "src/app/page.tsx": page(name),
     "src/app/globals.css": globalsCss(),
+    "src/__tests__/app.test.ts": appTestPlaceholder(name),
     ".gitignore": gitignore(),
     "README.md": readme({ name, github_owner, framework_repo }),
   };
@@ -449,7 +450,7 @@ function packageJson(name: string): string {
         dev: "next dev",
         build: "next build",
         start: "next start",
-        test: "echo 'No tests configured yet' && exit 0",
+        test: "vitest run",
       },
       dependencies: {
         next: "15.1.0",
@@ -461,6 +462,7 @@ function packageJson(name: string): string {
         "@types/react": "^19",
         "@types/react-dom": "^19",
         typescript: "^5",
+        vitest: "^1.2.0",
       },
     },
     null,
@@ -575,6 +577,23 @@ dist/
 .DS_Store
 *.pem
 npm-debug.log*
+`;
+}
+
+function appTestPlaceholder(name: string): string {
+  return `import { describe, it, expect } from "vitest";
+
+/**
+ * Placeholder test suite for ${name}.
+ *
+ * Replace this file with real unit tests as you build out the application.
+ * Run: npm test
+ */
+describe("${name} — placeholder", () => {
+  it("passes as a sanity check", () => {
+    expect(true).toBe(true);
+  });
+});
 `;
 }
 
