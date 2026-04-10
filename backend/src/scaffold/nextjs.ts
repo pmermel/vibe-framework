@@ -349,6 +349,7 @@ jobs:
       preview_app_prefix: ${p.name}-pr
       registry: ${p.registryName}
       target_port: 3000
+      backend_url: \${{ vars.VIBE_BACKEND_URL }}
     secrets: inherit
 `;
 }

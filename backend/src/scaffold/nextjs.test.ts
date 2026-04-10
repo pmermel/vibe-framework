@@ -209,6 +209,18 @@ describe("generateNextjsScaffold — .github/workflows/preview.yml", () => {
     const files = scaffold();
     expect(files[".github/workflows/preview.yml"]).toContain("reusable-preview.yml");
   });
+
+  it("passes backend_url from vars.VIBE_BACKEND_URL", () => {
+    const files = scaffold();
+    expect(files[".github/workflows/preview.yml"]).toContain("backend_url:");
+    expect(files[".github/workflows/preview.yml"]).toContain("vars.VIBE_BACKEND_URL");
+  });
+
+  it("backend_url input is present for different framework repos", () => {
+    const files = scaffold({ framework_repo: "fork-org/vibe-framework" });
+    expect(files[".github/workflows/preview.yml"]).toContain("backend_url:");
+    expect(files[".github/workflows/preview.yml"]).toContain("vars.VIBE_BACKEND_URL");
+  });
 });
 
 describe("generateNextjsScaffold — .github/workflows/staging.yml", () => {
