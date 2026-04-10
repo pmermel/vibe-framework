@@ -143,6 +143,71 @@ describe("postStatus — happy path", () => {
 
     expect(result.comment_body).not.toContain("Preview:");
   });
+
+  it("embeds screenshot as markdown image when screenshot_url is provided with preview_url", async () => {
+    const result = (await postStatus({
+      github_repo: "owner/repo",
+      pr_number: 42,
+      status: "success",
+      message: "Deploy complete",
+      preview_url: "https://preview.example.com",
+      screenshot_url: "https://myaccount.blob.core.windows.net/screenshots/pr-42/123.png",
+    })) as Record<string, unknown>;
+
+    expect(result.posted).toBe(true);
+    const body = result.comment_body as string;
+    expect(body).toContain("## Preview Status");
+    expect(body).toContain("**Preview URL:** https://preview.example.com");
+    expect(body).toContain("![Screenshot](https://myaccount.blob.core.windows.net/screenshots/pr-42/123.png)");
+  });
+
+  it("embeds screenshot image when screenshot_url provided without preview_url", async () => {
+    const result = (await postStatus({
+      github_repo: "owner/repo",
+      pr_number: 1,
+      status: "success",
+      message: "Done",
+      screenshot_url: "https://myaccount.blob.core.windows.net/screenshots/pr-1/456.png",
+    })) as Record<string, unknown>;
+
+    expect(result.posted).toBe(true);
+    const body = result.comment_body as string;
+    expect(body).toContain("![Screenshot](https://myaccount.blob.core.windows.net/screenshots/pr-1/456.png)");
+  });
+
+  it("preserves status and message in structured preview+screenshot comment for non-success statuses", async () => {
+    const result = (await postStatus({
+      github_repo: "owner/repo",
+      pr_number: 42,
+      status: "failure",
+      message: "Deploy timed out",
+      preview_url: "https://preview.example.com",
+      screenshot_url: "https://myaccount.blob.core.windows.net/screenshots/pr-42/123.png",
+    })) as Record<string, unknown>;
+
+    expect(result.posted).toBe(true);
+    const body = result.comment_body as string;
+    expect(body).toContain("## Preview Status");
+    expect(body).toContain("❌");
+    expect(body).toContain("FAILURE");
+    expect(body).toContain("Deploy timed out");
+    expect(body).toContain("**Preview URL:** https://preview.example.com");
+    expect(body).toContain("![Screenshot](https://myaccount.blob.core.windows.net/screenshots/pr-42/123.png)");
+    // Must NOT hard-code a success message
+    expect(body).not.toContain("Preview deployed");
+  });
+
+  it("rejects invalid screenshot_url", async () => {
+    await expect(
+      postStatus({
+        github_repo: "owner/repo",
+        pr_number: 1,
+        status: "success",
+        message: "ok",
+        screenshot_url: "not-a-url",
+      })
+    ).rejects.toThrow("Invalid params:");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -124,6 +124,54 @@ resource backendAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 // ---------------------------------------------------------------------------
+// Storage Account for screenshots
+// ---------------------------------------------------------------------------
+
+// Name is deterministic: uniqueString(rg.id) + 'vibeshots', truncated to 24 chars, all lowercase.
+// uniqueString returns 13 hex chars; 'vibeshots' is 9 chars — total 22, within the 24-char limit.
+var storageAccountName = '${take(uniqueString(resourceGroup().id), 13)}vibeshots'
+
+resource screenshotsStorage 'Microsoft.Storage/storageAccounts@2023-01-01' = {
+  name: storageAccountName
+  location: location
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    // Allow anonymous read access at the blob level (public screenshots container).
+    allowBlobPublicAccess: true
+    minimumTlsVersion: 'TLS1_2'
+  }
+}
+
+resource screenshotsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  // Path: <storageAccount>/default/<containerName>
+  name: '${screenshotsStorage.name}/default/screenshots'
+  properties: {
+    // Anonymous read for individual blobs — no listing of container contents.
+    publicAccess: 'Blob'
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Storage Blob Data Contributor: backend identity → screenshots storage account
+// ---------------------------------------------------------------------------
+
+// Built-in Storage Blob Data Contributor role definition ID — stable across all Azure tenants
+var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
+
+resource backendStorageBlobContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: screenshotsStorage
+  name: guid(screenshotsStorage.id, backendApp.id, storageBlobDataContributorRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', storageBlobDataContributorRoleId)
+    principalId: backendApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Outputs
 // ---------------------------------------------------------------------------
 
@@ -138,3 +186,9 @@ output acrId string = acr.id
 
 @description('Principal ID of the backend Container App system-assigned identity.')
 output backendPrincipalId string = backendApp.identity.principalId
+
+@description('Name of the Azure Storage Account used for screenshot blob storage.')
+output storageAccountName string = screenshotsStorage.name
+
+@description('Public URL of the screenshots blob container.')
+output screenshotsContainerUrl string = 'https://${screenshotsStorage.name}.blob.core.windows.net/screenshots'

@@ -7,6 +7,7 @@ const PostStatusParams = z.object({
   status: z.enum(["pending", "success", "failure"]),
   message: z.string(),
   preview_url: z.string().url().optional(),
+  screenshot_url: z.string().url().optional(),
 });
 
 /**
@@ -18,6 +19,7 @@ const PostStatusParams = z.object({
  *
  * Does NOT merge, promote, or deploy — reports status only.
  * Does NOT deduplicate comments — each call creates a new comment.
+ * When `screenshot_url` is provided, embeds the screenshot as a Markdown image in the comment body.
  */
 export async function postStatus(params: Record<string, unknown>): Promise<unknown> {
   const parsed = PostStatusParams.safeParse(params);
@@ -25,16 +27,30 @@ export async function postStatus(params: Record<string, unknown>): Promise<unkno
     throw new Error(`Invalid params: ${JSON.stringify(parsed.error.issues)}`);
   }
 
-  const { github_repo, pr_number, status, message, preview_url } = parsed.data;
+  const { github_repo, pr_number, status, message, preview_url, screenshot_url } = parsed.data;
   const [owner, repo] = github_repo.split("/");
 
   const emoji = status === "success" ? "✅" : status === "failure" ? "❌" : "⏳";
-  const body = [
-    `${emoji} **${status.toUpperCase()}** — ${message}`,
-    preview_url ? `\n**Preview:** ${preview_url}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+
+  let body: string;
+  if (preview_url && screenshot_url) {
+    body = [
+      "## Preview Status",
+      `${emoji} **${status.toUpperCase()}** — ${message}`,
+      "",
+      `**Preview URL:** ${preview_url}`,
+      "",
+      `![Screenshot](${screenshot_url})`,
+    ].join("\n");
+  } else {
+    body = [
+      `${emoji} **${status.toUpperCase()}** — ${message}`,
+      preview_url ? `\n**Preview:** ${preview_url}` : "",
+      screenshot_url ? `\n![Screenshot](${screenshot_url})` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
 
   const octokit = getGithubClient();
   const { data: comment } = await octokit.issues.createComment({
