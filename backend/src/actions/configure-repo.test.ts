@@ -541,3 +541,127 @@ describe("configureRepo — invalid params", () => {
     ).rejects.toThrow("Invalid params:");
   });
 });
+
+describe("configureRepo — azure_client_ids per-environment map", () => {
+  let mockOctokit: ReturnType<typeof makeMockOctokit>;
+
+  beforeEach(() => {
+    mockOctokit = makeMockOctokit();
+    (getGithubClient as ReturnType<typeof vi.fn>).mockReturnValue(mockOctokit);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sets distinct AZURE_CLIENT_ID per environment when azure_client_ids map is provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      azure_tenant_id: "tenant-abc",
+      azure_subscription_id: "sub-xyz",
+    })) as { azure_secrets_configured: boolean };
+
+    expect(result.azure_secrets_configured).toBe(true);
+
+    const calls = mockOctokit.actions.createOrUpdateEnvironmentSecret.mock.calls as Array<
+      [{ environment_name: string; secret_name: string; encrypted_value: string }]
+    >;
+
+    // Verify each environment gets its specific AZURE_CLIENT_ID (encryption makes value opaque,
+    // but we can verify createOrUpdateEnvironmentSecret is called for each env with that secret name)
+    const clientIdCalls = calls.filter(([args]) => args.secret_name === "AZURE_CLIENT_ID");
+    expect(clientIdCalls).toHaveLength(3);
+
+    const envNames = clientIdCalls.map(([args]) => args.environment_name);
+    expect(envNames).toContain("preview");
+    expect(envNames).toContain("staging");
+    expect(envNames).toContain("production");
+  });
+
+  it("sets AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID identically on all environments", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      azure_tenant_id: "tenant-abc",
+      azure_subscription_id: "sub-xyz",
+    });
+
+    const calls = mockOctokit.actions.createOrUpdateEnvironmentSecret.mock.calls as Array<
+      [{ environment_name: string; secret_name: string }]
+    >;
+
+    for (const env of ["preview", "staging", "production"]) {
+      const envCalls = calls.filter(([args]) => args.environment_name === env);
+      const secretNames = envCalls.map(([args]) => args.secret_name);
+      expect(secretNames).toContain("AZURE_TENANT_ID");
+      expect(secretNames).toContain("AZURE_SUBSCRIPTION_ID");
+    }
+  });
+
+  it("makes 9 secret API calls (3 environments × 3 secrets) with the azure_client_ids map", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      azure_tenant_id: "tenant-abc",
+      azure_subscription_id: "sub-xyz",
+    });
+
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).toHaveBeenCalledTimes(9);
+  });
+
+  it("azure_client_ids map takes precedence over azure_client_id when both are provided", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      azure_client_id: "client-single-fallback",
+      azure_tenant_id: "tenant-abc",
+      azure_subscription_id: "sub-xyz",
+    });
+
+    // When the map is present it should be used — we still get 9 calls
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).toHaveBeenCalledTimes(9);
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment_name: "preview",
+        secret_name: "AZURE_CLIENT_ID",
+      })
+    );
+  });
+
+  it("returns azure_secrets_configured:false when azure_client_ids provided but tenant/sub missing", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      // azure_tenant_id and azure_subscription_id omitted
+    })) as { azure_secrets_configured: boolean };
+
+    expect(result.azure_secrets_configured).toBe(false);
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).not.toHaveBeenCalled();
+  });
+});

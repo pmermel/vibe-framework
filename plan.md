@@ -200,10 +200,10 @@ approvers:
   - scaffold the selected template
   - write `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, workflows, and infrastructure files
   - enable and validate GitHub Codespaces for the generated repository and include a working `.devcontainer/devcontainer.json`
-  - provision a dedicated Azure Container Apps environment for the generated project, plus its GitHub environment settings
-  - create the generated repo's own GitHub environments, secrets, and variables required for preview, staging, and production workflows
+  - open an initial bootstrap PR as soon as the scaffold branch is pushed — before any Azure provisioning — so that failures leave a recoverable, reviewable GitHub surface
+  - provision a dedicated Azure Container Apps environment for the generated project (via `configure_cloud`), plus its GitHub environment settings (via `configure_repo`), after the PR is open
+  - on provisioning success: update the PR body with real Azure outputs; on failure: post an error comment to the PR and re-throw so the caller can recover
   - validate project-specific deployment plumbing, including preview deployment, after the project repo and environment exist
-  - open an initial bootstrap PR instead of committing directly to the default branch, so all generated repos start with the same reviewable and auditable adoption flow
 - `import_project` is the existing-repo adoption path:
   - connect an existing GitHub repo through the GitHub App
   - open a bootstrap PR instead of modifying the default branch directly
