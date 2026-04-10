@@ -51,7 +51,12 @@ function isFrameworkFile(filePath: string): boolean {
  *    `AZURE_SUBSCRIPTION_ID` env var. Throw immediately if neither is set — before
  *    any GitHub resources are created.
  * 3. Validate the target repo exists and is accessible via `repos.get`.
- * 4. Best-effort Codespaces enablement via `PUT /repos/{owner}/{repo}/codespaces/access`.
+ * 4. **Stack validation (fail closed):** Fetch `package.json` from the default branch. If it
+ *    exists and is parseable, verify `"next"` is in `dependencies` or `devDependencies`.
+ *    Throws a clear error if the repo clearly isn't Next.js. If `package.json` is absent
+ *    (404) or cannot be fetched, proceeds — the caller is responsible for passing a
+ *    compatible repo. Only applies when `template: "nextjs"` (the only supported value).
+ * 5. Best-effort Codespaces enablement via `PUT /repos/{owner}/{repo}/codespaces/access`.
  *    Wrapped in try/catch — non-fatal if plan or org restrictions apply.
  * 5. **Open a bootstrap PR first** (before any provisioning) so that partial failures
  *    always leave a visible, recoverable GitHub state:
@@ -119,6 +124,51 @@ export async function importProject(params: Record<string, unknown>): Promise<un
   // Validate the repo exists and is accessible via the GitHub App
   const repoResponse = await octokit.repos.get({ owner, repo });
   const defaultBranch = repoResponse.data.default_branch ?? "main";
+
+  // --- Stack validation (fail closed for unsupported stacks) ---
+  // Fetch package.json from the default branch. If it exists and is parseable,
+  // verify "next" appears in dependencies or devDependencies. A repo that clearly
+  // isn't Next.js (has package.json but no "next" dependency) is rejected with a
+  // clear error — writing a Next.js-flavored vibe.yaml onto a Python/Ruby/other
+  // repo would produce a broken bootstrap PR with mismatched workflow assumptions.
+  // If package.json doesn't exist or can't be fetched, we proceed (the repo may
+  // be empty, or the file may live in a non-root location — the caller is responsible
+  // for only calling import_project on compatible repos in those cases).
+  if (config.template === "nextjs") {
+    try {
+      const pkgResponse = await octokit.repos.getContent({
+        owner,
+        repo,
+        path: "package.json",
+        ref: defaultBranch,
+      });
+      const pkgData = pkgResponse.data as { content?: string; encoding?: string };
+      if (pkgData.content && pkgData.encoding === "base64") {
+        const pkgJson = JSON.parse(
+          Buffer.from(pkgData.content, "base64").toString("utf8")
+        ) as Record<string, unknown>;
+        const deps = {
+          ...((pkgJson.dependencies as Record<string, unknown>) ?? {}),
+          ...((pkgJson.devDependencies as Record<string, unknown>) ?? {}),
+        };
+        if (!Object.keys(deps).includes("next")) {
+          throw new Error(
+            `Target repo ${owner}/${repo} has a package.json but "next" is not in ` +
+            `its dependencies. import_project with template "nextjs" only supports ` +
+            `Next.js applications. Verify the target repo is a Next.js project or ` +
+            `use the correct template for your stack.`
+          );
+        }
+      }
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status;
+      // 404 means no package.json — proceed (repo may be empty or non-Node)
+      // Re-throw everything else, including our own validation error (no status)
+      if (status !== 404) {
+        throw err;
+      }
+    }
+  }
 
   // Best-effort Codespaces enablement. Wrapped in try/catch — non-fatal if
   // plan or org restrictions apply. Does not block the rest of the bootstrap.

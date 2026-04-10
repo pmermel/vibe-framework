@@ -30,6 +30,7 @@ const mockOctokit = {
   },
   repos: {
     get: vi.fn(),
+    getContent: vi.fn(),
     updateBranchProtection: vi.fn(),
     createOrUpdateEnvironment: vi.fn(),
   },
@@ -116,6 +117,9 @@ function setupHappyPath() {
       default_branch: "main",
     },
   });
+
+  // Default: no package.json (404) → stack validation skips, adoption proceeds
+  mockOctokit.repos.getContent.mockRejectedValue({ status: 404 });
 
   mockOctokit.git.getRef.mockResolvedValue({
     data: { object: { sha: "commit-abc123" } },
@@ -573,5 +577,88 @@ describe("importProject — invalid params", () => {
         template: "angular",
       })
     ).rejects.toThrow("Invalid params:");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: stack validation (Next.js detection)
+// ---------------------------------------------------------------------------
+
+describe("importProject — stack validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupHappyPath();
+  });
+
+  it("proceeds when package.json contains 'next' in dependencies", async () => {
+    const pkgJson = { dependencies: { next: "14.0.0", react: "18.0.0" } };
+    mockOctokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from(JSON.stringify(pkgJson)).toString("base64"),
+        encoding: "base64",
+      },
+    });
+
+    const result = await importProject({
+      github_repo: "owner/existing-app",
+      approvers: ["alice"],
+    }) as Record<string, unknown>;
+
+    expect(result.status).toBe("adopted");
+  });
+
+  it("proceeds when package.json contains 'next' in devDependencies", async () => {
+    const pkgJson = { devDependencies: { next: "14.0.0" } };
+    mockOctokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from(JSON.stringify(pkgJson)).toString("base64"),
+        encoding: "base64",
+      },
+    });
+
+    const result = await importProject({
+      github_repo: "owner/existing-app",
+      approvers: ["alice"],
+    }) as Record<string, unknown>;
+
+    expect(result.status).toBe("adopted");
+  });
+
+  it("throws when package.json exists but 'next' is not in dependencies", async () => {
+    const pkgJson = { dependencies: { express: "4.18.0" } };
+    mockOctokit.repos.getContent.mockResolvedValue({
+      data: {
+        content: Buffer.from(JSON.stringify(pkgJson)).toString("base64"),
+        encoding: "base64",
+      },
+    });
+
+    await expect(
+      importProject({
+        github_repo: "owner/existing-app",
+        approvers: ["alice"],
+      })
+    ).rejects.toThrow('"next" is not in its dependencies');
+  });
+
+  it("proceeds when package.json is absent (404) — repo may be empty or non-Node", async () => {
+    // setupHappyPath already sets getContent to reject with { status: 404 }
+    const result = await importProject({
+      github_repo: "owner/existing-app",
+      approvers: ["alice"],
+    }) as Record<string, unknown>;
+
+    expect(result.status).toBe("adopted");
+  });
+
+  it("re-throws non-404 errors from getContent", async () => {
+    mockOctokit.repos.getContent.mockRejectedValue({ status: 500 });
+
+    await expect(
+      importProject({
+        github_repo: "owner/existing-app",
+        approvers: ["alice"],
+      })
+    ).rejects.toMatchObject({ status: 500 });
   });
 });
