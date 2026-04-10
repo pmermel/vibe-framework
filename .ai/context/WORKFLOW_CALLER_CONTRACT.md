@@ -24,6 +24,7 @@ Reference for the four reusable GitHub Actions workflows provided by vibe-framew
 | `install_command` | string | no | `npm ci` | Dependency install command |
 | `build_command` | string | no | `npm run build` | Application build command |
 | `target_port` | number | no | `3000` | Port the container listens on |
+| `backend_url` | string | no | `""` | Vibe backend URL for PR enrichment (enrichment skipped when empty) |
 
 ### Secrets
 
@@ -55,6 +56,7 @@ Reference for the four reusable GitHub Actions workflows provided by vibe-framew
 - On subsequent pushes: updates the existing Container App image only (identity and AcrPull already set).
 - Posts a `<!-- vibe-preview-url -->` comment to the PR; subsequent pushes update the same comment.
 - On PR close: deletes the Container App and the `pr-<N>` ACR image.
+- After a successful deploy, the `post-enrichment` job calls the backend to capture a screenshot (`capture_preview`) and post a structured status comment (`post_status`) to the PR. This job is `continue-on-error: true` — enrichment failures never block PR merge. The job is skipped when `backend_url` is empty.
 
 ### Thin Wrapper Example
 
@@ -73,8 +75,17 @@ jobs:
       container_app_environment: my-app-env
       preview_app_prefix: my-app-pr
       registry: myappacr
+      backend_url: ${{ vars.VIBE_BACKEND_URL }}
     secrets: inherit
 ```
+
+`VIBE_BACKEND_URL` is a GitHub Actions repo variable containing the public HTTPS URL of the vibe backend. It is not a secret. Enrichment is skipped gracefully when the variable is not set or empty.
+
+**Where this variable comes from depends on the repo type:**
+- **Framework repo** (`vibe-framework` itself): set by `setup-github.sh` during framework bootstrap via `gh variable set VIBE_BACKEND_URL`.
+- **Generated project repos**: set by `configureRepo()` during `create_project` bootstrap. `create_project` passes `process.env.BACKEND_URL` (wired onto the backend Container App by `setup-azure.sh`) as the `backend_url` param to `configureRepo`, which then creates the `VIBE_BACKEND_URL` repo variable on the generated project repo via `POST /repos/{owner}/{repo}/actions/variables`.
+
+**Backend endpoint and auth model:** The enrichment job calls `POST $VIBE_BACKEND_URL/action` — the currently supported production integration path. This endpoint is unauthenticated in the current phase (parameter validation only, no credential check). `POST /action` is the intentionally supported production interface for GitHub Actions callers; `/mcp` is disabled in production (returns 501) until real OAuth is wired. When auth is added to `/action` in a future phase, a `VIBE_BACKEND_TOKEN` secret (or equivalent) will need to be threaded through the workflow alongside `backend_url`.
 
 ---
 

@@ -42,6 +42,7 @@ function makeMockOctokit(overrides: Record<string, unknown> = {}) {
       }),
       createOrUpdateEnvironmentSecret: vi.fn().mockResolvedValue({}),
     },
+    request: vi.fn().mockResolvedValue({}),
     ...overrides,
   };
 }
@@ -663,5 +664,96 @@ describe("configureRepo — azure_client_ids per-environment map", () => {
 
     expect(result.azure_secrets_configured).toBe(false);
     expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).not.toHaveBeenCalled();
+  });
+});
+
+describe("configureRepo — VIBE_BACKEND_URL repo variable", () => {
+  let mockOctokit: ReturnType<typeof makeMockOctokit>;
+
+  beforeEach(() => {
+    mockOctokit = makeMockOctokit();
+    (getGithubClient as ReturnType<typeof vi.fn>).mockReturnValue(mockOctokit);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates VIBE_BACKEND_URL variable when backend_url is provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      backend_url: "https://vibe-backend.eastus2.azurecontainerapps.io",
+    })) as { backend_url_configured: boolean };
+
+    expect(result.backend_url_configured).toBe(true);
+    expect(mockOctokit.request).toHaveBeenCalledWith(
+      "POST /repos/{owner}/{repo}/actions/variables",
+      expect.objectContaining({
+        owner: "owner",
+        repo: "my-app",
+        name: "VIBE_BACKEND_URL",
+        value: "https://vibe-backend.eastus2.azurecontainerapps.io",
+      })
+    );
+  });
+
+  it("returns backend_url_configured: false when backend_url is not provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+    })) as { backend_url_configured: boolean };
+
+    expect(result.backend_url_configured).toBe(false);
+    expect(mockOctokit.request).not.toHaveBeenCalledWith(
+      "POST /repos/{owner}/{repo}/actions/variables",
+      expect.anything()
+    );
+  });
+
+  it("falls back to PATCH when VIBE_BACKEND_URL already exists (409)", async () => {
+    mockOctokit.request = vi
+      .fn()
+      .mockRejectedValueOnce({ status: 409 }) // POST → conflict
+      .mockResolvedValueOnce({}); // PATCH → success
+
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      backend_url: "https://vibe-backend.eastus2.azurecontainerapps.io",
+    })) as { backend_url_configured: boolean };
+
+    expect(result.backend_url_configured).toBe(true);
+    expect(mockOctokit.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/actions/variables/{name}",
+      expect.objectContaining({
+        owner: "owner",
+        repo: "my-app",
+        name: "VIBE_BACKEND_URL",
+        value: "https://vibe-backend.eastus2.azurecontainerapps.io",
+      })
+    );
+  });
+
+  it("re-throws non-409 errors from the variable creation request", async () => {
+    mockOctokit.request = vi.fn().mockRejectedValue({ status: 403 });
+
+    await expect(
+      configureRepo({
+        github_repo: "owner/my-app",
+        approvers: ["alice"],
+        backend_url: "https://vibe-backend.eastus2.azurecontainerapps.io",
+      })
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("throws Invalid params when backend_url is not a valid URL", async () => {
+    await expect(
+      configureRepo({
+        github_repo: "owner/my-app",
+        approvers: ["alice"],
+        backend_url: "not-a-url",
+      })
+    ).rejects.toThrow("Invalid params:");
   });
 });

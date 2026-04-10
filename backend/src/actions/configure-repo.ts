@@ -17,6 +17,7 @@ const ConfigureRepoParams = z.object({
   azure_client_ids: AzureClientIdsMap.optional(),
   azure_tenant_id: z.string().optional(),
   azure_subscription_id: z.string().optional(),
+  backend_url: z.string().url().optional(),
 });
 
 /** Standard labels to create on the target repository. */
@@ -89,7 +90,13 @@ async function encryptSecret(publicKey: string, secretValue: string): Promise<st
  *     when `azure_client_ids` map is not provided)
  *   - `azure_tenant_id` (string, optional) — Azure tenant ID output from `configure_cloud`
  *   - `azure_subscription_id` (string, optional) — Azure subscription ID output from `configure_cloud`
- * @returns `{ configured: true, repo, branch_protections, environments, labels_created, azure_secrets_configured }`
+ *   - `backend_url` (string, optional, valid URL) — when provided, creates or updates the
+ *     `VIBE_BACKEND_URL` GitHub Actions repo variable so the generated project's preview
+ *     workflow can reach the vibe backend for PR enrichment (screenshot + status comment).
+ *     `create_project` passes `process.env.BACKEND_URL` (set on the Container App by
+ *     `setup-azure.sh`). When absent, no variable is created and enrichment is silently
+ *     skipped by the workflow's `if [ -z "$BACKEND_URL" ]` guard.
+ * @returns `{ configured: true, repo, branch_protections, environments, labels_created, azure_secrets_configured, backend_url_configured }`
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  * @throws GitHub API errors if branch protection or environment operations fail.
  * @throws GitHub API errors if any approver username cannot be resolved — fails closed
@@ -209,6 +216,38 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     }
   }
 
+  // --- VIBE_BACKEND_URL repo variable ---
+  // When backend_url is provided, create or update the VIBE_BACKEND_URL GitHub Actions
+  // repo variable so the generated project's preview workflow can call the vibe backend
+  // for PR enrichment. Uses POST first; falls back to PATCH if the variable already exists.
+  // This is a repo-level variable (not a secret) — it is the public HTTPS URL of the backend.
+  let backendUrlConfigured = false;
+  if (config.backend_url) {
+    try {
+      await octokit.request("POST /repos/{owner}/{repo}/actions/variables", {
+        owner,
+        repo,
+        name: "VIBE_BACKEND_URL",
+        value: config.backend_url,
+      });
+      backendUrlConfigured = true;
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status;
+      if (status === 409) {
+        // Variable already exists — update it
+        await octokit.request("PATCH /repos/{owner}/{repo}/actions/variables/{name}", {
+          owner,
+          repo,
+          name: "VIBE_BACKEND_URL",
+          value: config.backend_url,
+        });
+        backendUrlConfigured = true;
+      } else {
+        throw err;
+      }
+    }
+  }
+
   // --- Issue labels ---
   let labelsCreated = 0;
   for (const label of STANDARD_LABELS) {
@@ -238,5 +277,6 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     environments: [...ENVIRONMENTS],
     labels_created: labelsCreated,
     azure_secrets_configured: azureSecretsConfigured,
+    backend_url_configured: backendUrlConfigured,
   };
 }

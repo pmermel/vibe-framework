@@ -212,13 +212,19 @@ beyond local/tunnel validation runs.
 
 ---
 
-## REST smoke-test reference (still valid)
+## REST endpoint reference
+
+`POST /action` is the **currently supported production integration path** for callers that cannot use the MCP transport. In practice this means GitHub Actions workflows — the `post-enrichment` job in `reusable-preview.yml` calls `POST /action` on every successful preview deploy to invoke `capture_preview` and `post_status`.
+
+**Current auth model:** `POST /action` is unauthenticated. The backend validates request parameters (Zod schemas) but does not require any credential. This is intentional for the current phase — the endpoint is protected only by obscurity (the `VIBE_BACKEND_URL` variable is not published). Adding real auth (e.g. a shared secret or OIDC token) is a future hardening step; when that happens, the `post-enrichment` job will need to pass credentials.
+
+`/mcp` is disabled in production (returns 501) until real OAuth is wired. `POST /action` is the only live production path today.
 
 ```bash
 # Health
 curl -s <BASE_URL>/health
 
-# Direct action (bypasses MCP transport)
+# POST /action — production integration path (used by reusable-preview.yml enrichment job)
 curl -s -X POST <BASE_URL>/action \
   -H "Content-Type: application/json" \
   -d '{"action":"post_status","params":{"github_repo":"pmermel/vibe-framework","pr_number":66,"status":"pending","message":"direct REST smoke test"}}'

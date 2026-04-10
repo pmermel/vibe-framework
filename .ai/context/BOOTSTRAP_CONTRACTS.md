@@ -95,7 +95,7 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 10. On provisioning success: update the PR body with real Azure outputs (ACR login server, staging/production FQDNs, resource group).
 11. On provisioning failure: post an error comment to the PR with the error details and retry instructions, then re-throw so the caller sees the failure.
 12. After the bootstrap PR is open, GitHub Actions runs the preview workflow and deploys the first preview environment.
-13. The backend posts preview status and screenshot back to the bootstrap PR via `capture_preview` + `post_status`.
+13. The `post-enrichment` job in `reusable-preview.yml` (triggered automatically after the deploy job succeeds) calls `capture_preview` then `post_status` on the backend, posting a screenshot and structured status comment back to the bootstrap PR. No agent action is required — GitHub Actions drives steps 12–13. The enrichment job is `continue-on-error: true` and skipped gracefully when `VIBE_BACKEND_URL` is not set.
 
 ### Bootstrap PR contents
 - All generated files (`vibe.yaml`, instruction files, workflows, infra)
@@ -126,7 +126,7 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 6. Open a **bootstrap PR** — do not modify the default branch directly.
 7. Add to the bootstrap PR: `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, `.ai/context/`, `.devcontainer/devcontainer.json`, workflow wrappers, and required infra/config files.
 8. After the bootstrap PR is open, GitHub Actions runs the preview workflow and deploys the first preview environment.
-9. Validate the preview deployment is reachable and post status + screenshot back to the bootstrap PR.
+9. The `post-enrichment` job in `reusable-preview.yml` calls `capture_preview` then `post_status` on the backend automatically after the deploy job succeeds. No agent action required. The enrichment job is `continue-on-error: true` and skipped gracefully when `VIBE_BACKEND_URL` is not set.
 10. Avoid restructuring application code unless required for deployability; limit changes to framework adoption files.
 
 ### Bootstrap PR contents
@@ -151,7 +151,8 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 - Apply branch protections to `develop` and `main`.
 - Create GitHub labels: `feature`, `fix`, `docs`, `infra`, `chore`, `phase-1` through `phase-4`.
 - Create GitHub environments: `preview`, `staging`, `production`.
-- Set environment secrets and variables for Azure OIDC and Container Apps.
+- Set per-environment OIDC secrets (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) using `azure_client_ids` map from `configure_cloud` output.
+- Create the `VIBE_BACKEND_URL` GitHub Actions repo variable when `backend_url` is provided. `create_project` passes `process.env.BACKEND_URL` (set on the Container App by `setup-azure.sh`). This variable is what the `post-enrichment` job in `reusable-preview.yml` reads to call the vibe backend for screenshot + status posting. When absent, no variable is created and enrichment silently skips.
 - Configure required status checks for PR merges.
 - Set production environment protection rules (manual approval required).
 

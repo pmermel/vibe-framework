@@ -85,11 +85,13 @@ az containerapp update \
   --registry-identity system \
   --output none
 
-echo "→ Wiring storage account name to Container App env var"
+echo "→ Wiring storage account name and backend URL to Container App env vars"
 az containerapp update \
   --name "${BACKEND_APP_NAME:-vibe-backend}" \
   --resource-group "$RESOURCE_GROUP" \
-  --set-env-vars "AZURE_STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME" \
+  --set-env-vars \
+    "AZURE_STORAGE_ACCOUNT_NAME=$STORAGE_ACCOUNT_NAME" \
+    "BACKEND_URL=$BACKEND_URL" \
   --output none
 
 echo "→ Azure provisioning complete"
