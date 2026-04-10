@@ -53,12 +53,13 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 1. The user invokes `create_project` from their provider app.
 2. The backend creates a new GitHub repository through the GitHub App.
 3. The backend scaffolds the selected template and writes the required framework files.
-4. The backend enables and validates Codespaces for the new repository.
-5. The backend provisions a dedicated Azure Container Apps environment for that project.
-6. The backend creates the project repo's GitHub environments, secrets, variables, and approval settings.
-7. The backend opens an initial bootstrap PR instead of writing directly to the default branch.
-8. GitHub Actions runs the preview workflow on that bootstrap PR.
-9. The backend posts preview status and supporting metadata back to the PR after workflow-driven deployment completes.
+4. The backend enables Codespaces for the new repository (best-effort; non-fatal if plan/org restrictions apply).
+5. The backend opens an initial bootstrap PR as soon as the scaffold branch is pushed — before any Azure provisioning — so failures leave a recoverable, reviewable GitHub surface.
+6. The backend provisions a dedicated Azure Container Apps environment for that project via `configure_cloud`.
+7. The backend creates the project repo's GitHub environments, per-environment OIDC secrets, variables, and approval settings via `configure_repo`.
+8. On provisioning success: the PR body is updated with real Azure outputs (ACR, FQDNs, resource group). On failure: an error comment is posted to the PR and the error is re-thrown.
+9. GitHub Actions runs the preview workflow on the bootstrap PR.
+10. The backend posts preview status and a screenshot back to the PR via `capture_preview` + `post_status` after workflow-driven deployment completes.
 
 ### Success outcome
 - A new project repo exists with a reviewable bootstrap PR.
