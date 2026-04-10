@@ -8,6 +8,18 @@ vi.mock("./actions/bootstrap-framework.js", () => ({
   bootstrapFramework: vi.fn(),
 }));
 
+// Mocked so import_project dispatch tests never make real GitHub/Azure calls.
+vi.mock("./actions/import-project.js", () => ({
+  importProject: vi.fn().mockResolvedValue({
+    status: "adopted",
+    github_repo: "owner/existing-app",
+    bootstrap_pr_url: "https://github.com/owner/existing-app/pull/1",
+    bootstrap_pr_number: 1,
+    cloud_provisioned: true,
+    repo_configured: true,
+  }),
+}));
+
 // Mocked so configure_cloud dispatch tests never call real Azure.
 vi.mock("./actions/configure-cloud.js", () => ({
   configureCloud: vi.fn().mockResolvedValue({
