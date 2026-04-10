@@ -53,6 +53,9 @@ az bicep build --file infrastructure/container-apps-env.bicep
 
 # Lint
 cd backend && npm run lint
+
+# Validate Codespaces configuration (framework repo)
+bash scripts/validate-codespaces.sh
 ```
 
 ## Repository Structure

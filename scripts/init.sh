@@ -187,12 +187,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 8: Print success summary
+# Step 8: Validate Codespaces configuration (before declaring success)
+# ---------------------------------------------------------------------------
+
+echo "→ Validating Codespaces configuration"
+CODESPACES_OK=true
+bash "$SCRIPT_DIR/validate-codespaces.sh" || {
+  echo "⚠ Codespaces validation incomplete — see output above"
+  CODESPACES_OK=false
+}
+
+# ---------------------------------------------------------------------------
+# Step 9: Print success summary
 # ---------------------------------------------------------------------------
 
 echo ""
 echo "═══════════════════════════════════════════════════════════════════"
-echo "  Bootstrap complete!"
+if [ "$CODESPACES_OK" = "true" ]; then
+  echo "  Bootstrap complete!"
+else
+  echo "  Bootstrap complete (Codespaces validation incomplete — see above)"
+fi
 echo "═══════════════════════════════════════════════════════════════════"
 echo ""
 echo "  Backend URL:   $BACKEND_URL"
