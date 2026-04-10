@@ -220,3 +220,10 @@ echo "     curl -X POST $BACKEND_URL/action \\"
 echo "       -H 'Content-Type: application/json' \\"
 echo "       -d '{\"action\":\"bootstrap_framework\",\"params\":{\"github_repo\":\"$GITHUB_ORG_OR_USER/$FRAMEWORK_REPO\",\"backend_url\":\"$BACKEND_URL\"}}'"
 echo ""
+
+# ---------------------------------------------------------------------------
+# Step 9: Validate Codespaces configuration
+# ---------------------------------------------------------------------------
+
+echo "→ Validating Codespaces configuration"
+bash "$SCRIPT_DIR/validate-codespaces.sh" || echo "⚠ Codespaces validation incomplete — check the output above"
