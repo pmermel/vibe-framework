@@ -151,7 +151,8 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 - Apply branch protections to `develop` and `main`.
 - Create GitHub labels: `feature`, `fix`, `docs`, `infra`, `chore`, `phase-1` through `phase-4`.
 - Create GitHub environments: `preview`, `staging`, `production`.
-- Set environment secrets and variables for Azure OIDC and Container Apps.
+- Set per-environment OIDC secrets (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) using `azure_client_ids` map from `configure_cloud` output.
+- Create the `VIBE_BACKEND_URL` GitHub Actions repo variable when `backend_url` is provided. `create_project` passes `process.env.BACKEND_URL` (set on the Container App by `setup-azure.sh`). This variable is what the `post-enrichment` job in `reusable-preview.yml` reads to call the vibe backend for screenshot + status posting. When absent, no variable is created and enrichment silently skips.
 - Configure required status checks for PR merges.
 - Set production environment protection rules (manual approval required).
 

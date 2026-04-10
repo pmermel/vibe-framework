@@ -290,6 +290,10 @@ export async function createProject(params: Record<string, unknown>): Promise<un
         azure_client_ids: oidcClientIds,
         azure_tenant_id: cloudOutputs.tenant_id as string,
         azure_subscription_id: cloudOutputs.subscription_id as string,
+        // Wire the backend URL into the generated project's repo variable so the
+        // post-enrichment workflow job can reach the backend for screenshot posting.
+        // process.env.BACKEND_URL is set on the Container App by setup-azure.sh.
+        backend_url: process.env.BACKEND_URL,
       });
 
       repoConfigured = true;
