@@ -11,7 +11,7 @@ Defines the contracts for all bootstrap actions in vibe-framework. Both provider
 | `configure_cloud` | ✅ Implemented | Deploys `container-apps-env.json` ARM template; provisions OIDC credentials via Microsoft Graph REST API; assigns Contributor + AcrPush roles via ARM REST; idempotent (check-before-create + deterministic GUID names); returns Azure outputs for `configure_repo` |
 | `post_status` | ✅ Implemented | Posts real GitHub PR comment via `issues.createComment`; returns `posted: true`, `comment_id`, `comment_url`. When `screenshot_url` is provided, embeds Markdown image in the comment body alongside the status/message. |
 | `capture_preview` | ✅ Implemented | Playwright screenshot captured and uploaded to Azure Blob Storage (`screenshots` container in framework-level Storage Account provisioned by `framework-env.bicep`). Returns `{ posted: true, screenshot_url }` when `AZURE_STORAGE_ACCOUNT_NAME` is set (managed-identity auth via `DefaultAzureCredential`). Falls back to `{ posted: false, posted_deferred_reason: "external_storage_required" }` when not configured. Blob name: `pr-{pr_number}/{timestamp}.png`. |
-| `import_project` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
+| `import_project` | ✅ Implemented | Full adoption flow: validates repo access, enables Codespaces (best-effort), opens bootstrap PR first (PR-first ordering — same as `create_project`), calls `configure_cloud` + `configure_repo`, updates PR body with Azure outputs on success, posts error comment on failure and re-throws. Adoption files are framework-level only (vibe.yaml, CLAUDE.md, AGENTS.md, .ai/context/, .devcontainer/, .github/workflows/, infrastructure/) — application code is never overwritten. |
 | `bootstrap_framework` | ✅ Implemented | Validates GitHub App auth, backend `/health`, and GitHub environments (`preview`/`staging`/`production`); returns `{ status: "ok"\|"degraded", checks: { github_app, backend_health, environments }, details: string[] }`; never throws on check failure |
 | `generate_assets` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
 
@@ -113,7 +113,10 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 ## `import_project` — Existing Repo Adoption
 
 **Trigger:** Provider tool call or `init.sh --import`
-**Use case:** Adopting an existing GitHub repo into the framework.
+**Use case:** Adopting a **Next.js repo or empty/bare repo** into the framework. This action is NOT a general-purpose adoption path for arbitrary existing repos of unknown stack. Supported targets:
+- **Next.js repos** — must have `package.json` with `"next"` in `dependencies` or `devDependencies`; fails closed with a clear error if `package.json` exists but `"next"` is absent.
+- **Empty/bare repos** — no `package.json`; the caller confirms the repo will be used as a Next.js project after the bootstrap PR is merged.
+- **Not supported:** Python, Ruby, Go, or other non-Node repos. These have no `package.json` and are not detected — callers must not pass them.
 
 This action belongs to the ongoing work tier, but it is only valid after framework bootstrap has already completed.
 
