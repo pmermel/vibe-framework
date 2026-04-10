@@ -113,7 +113,10 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 ## `import_project` — Existing Repo Adoption
 
 **Trigger:** Provider tool call or `init.sh --import`
-**Use case:** Adopting an existing GitHub repo into the framework.
+**Use case:** Adopting a **Next.js repo or empty/bare repo** into the framework. This action is NOT a general-purpose adoption path for arbitrary existing repos of unknown stack. Supported targets:
+- **Next.js repos** — must have `package.json` with `"next"` in `dependencies` or `devDependencies`; fails closed with a clear error if `package.json` exists but `"next"` is absent.
+- **Empty/bare repos** — no `package.json`; the caller confirms the repo will be used as a Next.js project after the bootstrap PR is merged.
+- **Not supported:** Python, Ruby, Go, or other non-Node repos. These have no `package.json` and are not detected — callers must not pass them.
 
 This action belongs to the ongoing work tier, but it is only valid after framework bootstrap has already completed.
 

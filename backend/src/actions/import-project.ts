@@ -41,9 +41,12 @@ function isFrameworkFile(filePath: string): boolean {
 /**
  * importProject
  *
- * Existing-repo adoption orchestrator. Connects an existing GitHub repository
- * to the vibe-framework by generating framework adoption files and opening a
- * bootstrap PR. The repo's application code is never touched.
+ * **Scope: Next.js repos and empty/bare repos only.**
+ * This action adopts an existing GitHub repository into vibe-framework by committing
+ * framework files (vibe.yaml, CLAUDE.md, AGENTS.md, workflows, .devcontainer/) and
+ * opening a bootstrap PR. It does NOT support arbitrary existing repos of unknown
+ * stack — it is the caller's responsibility to only invoke this action on a Next.js
+ * repo or an empty/bare repo that will become Next.js after the bootstrap PR is merged.
  *
  * **Step-by-step flow:**
  * 1. Validate params (Zod). Throw `"Invalid params: ..."` immediately on failure.
@@ -51,11 +54,14 @@ function isFrameworkFile(filePath: string): boolean {
  *    `AZURE_SUBSCRIPTION_ID` env var. Throw immediately if neither is set — before
  *    any GitHub resources are created.
  * 3. Validate the target repo exists and is accessible via `repos.get`.
- * 4. **Stack validation (fail closed):** Fetch `package.json` from the default branch. If it
- *    exists and is parseable, verify `"next"` is in `dependencies` or `devDependencies`.
- *    Throws a clear error if the repo clearly isn't Next.js. If `package.json` is absent
- *    (404) or cannot be fetched, proceeds — the caller is responsible for passing a
- *    compatible repo. Only applies when `template: "nextjs"` (the only supported value).
+ * 4. **Stack validation (fail closed for clearly-wrong stacks):** Fetch `package.json`
+ *    from the default branch. If it exists and is parseable, verify `"next"` is in
+ *    `dependencies` or `devDependencies`. Throws a clear error if the repo has a
+ *    `package.json` without `"next"` — this is a Python/Ruby/non-Next.js Node repo.
+ *    If `package.json` is absent (404): proceeds, targeting empty repos and bare repos
+ *    that the caller has confirmed will be used as Next.js projects. The action does
+ *    NOT attempt to detect other stack markers (Go, Python, Ruby, etc.) — callers
+ *    should only pass repos they know are Next.js or empty.
  * 5. Best-effort Codespaces enablement via `PUT /repos/{owner}/{repo}/codespaces/access`.
  *    Wrapped in try/catch — non-fatal if plan or org restrictions apply.
  * 5. **Open a bootstrap PR first** (before any provisioning) so that partial failures
@@ -82,6 +88,10 @@ function isFrameworkFile(filePath: string): boolean {
  * - `azure_subscription_id` must be resolvable before any GitHub resources are created.
  * - PR-first ordering: the bootstrap PR must be open before any Azure provisioning starts.
  * - Only `template: "nextjs"` is supported in this phase.
+ * - Supported target repos: Next.js apps (package.json with `"next"` in deps) or empty/bare
+ *   repos. Non-Next.js repos with a package.json are rejected. Repos of other stacks (Python,
+ *   Ruby, Go, etc.) with no package.json are not detected and will receive a Next.js-flavored
+ *   bootstrap PR — callers must not pass these repos.
  *
  * @param params - Must match `ImportProjectParams` schema:
  *   - `github_repo` (string, required, `owner/repo` format)
