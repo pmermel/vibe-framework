@@ -24,6 +24,7 @@ Reference for the four reusable GitHub Actions workflows provided by vibe-framew
 | `install_command` | string | no | `npm ci` | Dependency install command |
 | `build_command` | string | no | `npm run build` | Application build command |
 | `target_port` | number | no | `3000` | Port the container listens on |
+| `backend_url` | string | no | `""` | Vibe backend URL for PR enrichment (enrichment skipped when empty) |
 
 ### Secrets
 
@@ -55,6 +56,7 @@ Reference for the four reusable GitHub Actions workflows provided by vibe-framew
 - On subsequent pushes: updates the existing Container App image only (identity and AcrPull already set).
 - Posts a `<!-- vibe-preview-url -->` comment to the PR; subsequent pushes update the same comment.
 - On PR close: deletes the Container App and the `pr-<N>` ACR image.
+- After a successful deploy, the `post-enrichment` job calls the backend to capture a screenshot (`capture_preview`) and post a structured status comment (`post_status`) to the PR. This job is `continue-on-error: true` — enrichment failures never block PR merge. The job is skipped when `backend_url` is empty.
 
 ### Thin Wrapper Example
 
@@ -73,8 +75,11 @@ jobs:
       container_app_environment: my-app-env
       preview_app_prefix: my-app-pr
       registry: myappacr
+      backend_url: ${{ vars.VIBE_BACKEND_URL }}
     secrets: inherit
 ```
+
+`VIBE_BACKEND_URL` is a GitHub Actions repo variable set by `setup-github.sh` during framework bootstrap. It is not a secret — it is the public HTTPS URL of the vibe backend. Enrichment is skipped gracefully when the variable is not set or empty.
 
 ---
 
