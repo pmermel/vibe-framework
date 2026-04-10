@@ -83,21 +83,24 @@ GitHub App setup is a first-class bootstrap dependency, not a checklist bullet. 
 This action belongs to the ongoing work tier, but it is only valid after framework bootstrap has already completed.
 
 ### Steps
-1. Create a new GitHub repo through the GitHub App.
-2. Scaffold the selected template into the repo.
-3. Write `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, `.ai/context/`, `.devcontainer/devcontainer.json`, workflow wrappers, and infrastructure files.
-4. Enable and validate GitHub Codespaces for the generated repository.
-5. Provision a **dedicated** Azure Container Apps environment for the project (not the framework backend env).
-6. Create GitHub environments (`preview`, `staging`, `production`) with required secrets, variables, and approval gates.
-7. Validate pre-PR prerequisites: GitHub App auth, Azure OIDC trust, Container Apps environment reachability, Codespaces enablement.
-8. Open an initial **bootstrap PR** — do not commit directly to the default branch.
-9. After the bootstrap PR is open, GitHub Actions runs the preview workflow and deploys the first preview environment.
-10. Validate the preview deployment is reachable and post status + screenshot back to the bootstrap PR.
+1. Resolve `azure_subscription_id`: prefer caller-supplied param, fall back to `AZURE_SUBSCRIPTION_ID` env var (set by `setup-azure.sh` during framework bootstrap). Throw immediately if neither is set — no resources are created.
+2. Create a new GitHub repo through the GitHub App.
+3. Scaffold the selected template into the repo.
+4. Write `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, `.ai/context/`, `.devcontainer/devcontainer.json`, workflow wrappers, and infrastructure files.
+5. Enable GitHub Codespaces for the generated repository (best-effort — non-fatal if plan/org restrictions apply).
+6. Create `develop` and `bootstrap/vibe-setup` branches from the scaffold commit.
+7. **Open the bootstrap PR immediately** — before any Azure provisioning. The PR is the GitHub-centered handoff surface and must exist so failures leave a recoverable, visible state in GitHub.
+8. Provision a **dedicated** Azure Container Apps environment for the project via `configure_cloud` (not the framework backend env).
+9. Configure GitHub environments (`preview`, `staging`, `production`) with per-environment OIDC secrets and branch protections via `configure_repo`.
+10. On provisioning success: update the PR body with real Azure outputs (ACR login server, staging/production FQDNs, resource group).
+11. On provisioning failure: post an error comment to the PR with the error details and retry instructions, then re-throw so the caller sees the failure.
+12. After the bootstrap PR is open, GitHub Actions runs the preview workflow and deploys the first preview environment.
+13. The backend posts preview status and screenshot back to the bootstrap PR via `capture_preview` + `post_status`.
 
 ### Bootstrap PR contents
 - All generated files (`vibe.yaml`, instruction files, workflows, infra)
-- Summary of what was provisioned
-- Checklist: preview URL (populated after CI runs), OIDC status, Codespaces status
+- Azure provisioning outputs table on success (ACR login server, FQDNs, resource group); placeholder checklist if provisioning is retried separately
+- Error comment with retry instructions if provisioning fails
 
 ### Success criteria
 - Bootstrap PR is open and reviewable.
