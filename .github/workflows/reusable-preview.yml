@@ -52,6 +52,11 @@ on:
         description: "Port the container listens on"
         type: number
         default: 3000
+      backend_url:
+        description: "Vibe backend URL for PR enrichment (optional — enrichment skipped if not set)"
+        required: false
+        default: ""
+        type: string
       max_concurrent:
         description: "Maximum number of active preview Container Apps. When this limit is reached, the oldest preview is deleted before the new one is deployed."
         type: number
@@ -315,6 +320,52 @@ jobs:
                 body,
               });
             }
+
+  # ---------------------------------------------------------------------------
+  # post-enrichment — runs after a successful deploy (not on PR close).
+  # Calls the vibe backend to capture a screenshot and post a structured
+  # status comment to the PR. continue-on-error: true ensures enrichment
+  # failures never block PR merge or the deploy job result.
+  # Skipped gracefully when backend_url is not set.
+  # ---------------------------------------------------------------------------
+  post-enrichment:
+    name: Post preview enrichment
+    needs: [deploy]
+    if: github.event.action != 'closed' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Capture preview and post status
+        env:
+          BACKEND_URL: ${{ inputs.backend_url }}
+          PREVIEW_URL: ${{ needs.deploy.outputs.preview_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$BACKEND_URL" ]; then
+            echo "VIBE_BACKEND_URL not set — skipping enrichment"
+            exit 0
+          fi
+
+          # Call capture_preview
+          CAPTURE_RESPONSE=$(curl -sf -X POST "$BACKEND_URL/action" \
+            -H "Content-Type: application/json" \
+            -d "{\"action\":\"capture_preview\",\"params\":{\"url\":\"$PREVIEW_URL\",\"github_repo\":\"$GITHUB_REPO\",\"pr_number\":$PR_NUMBER}}" \
+            || echo '{"ok":false}')
+
+          SCREENSHOT_URL=$(echo "$CAPTURE_RESPONSE" | jq -r '.result.screenshot_url // empty')
+
+          # Build post_status params
+          STATUS_PARAMS="{\"action\":\"post_status\",\"params\":{\"github_repo\":\"$GITHUB_REPO\",\"pr_number\":$PR_NUMBER,\"status\":\"success\",\"message\":\"Preview deployed\",\"preview_url\":\"$PREVIEW_URL\""
+          if [ -n "$SCREENSHOT_URL" ]; then
+            STATUS_PARAMS="$STATUS_PARAMS,\"screenshot_url\":\"$SCREENSHOT_URL\""
+          fi
+          STATUS_PARAMS="$STATUS_PARAMS}}"
+
+          curl -sf -X POST "$BACKEND_URL/action" \
+            -H "Content-Type: application/json" \
+            -d "$STATUS_PARAMS" \
+            || echo "post_status call failed — continuing"
 
   # ---------------------------------------------------------------------------
   # cleanup — runs when a PR is closed (merged or abandoned).
