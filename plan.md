@@ -204,15 +204,16 @@ approvers:
   - provision a dedicated Azure Container Apps environment for the generated project (via `configure_cloud`), plus its GitHub environment settings (via `configure_repo`), after the PR is open
   - on provisioning success: update the PR body with real Azure outputs; on failure: post an error comment to the PR and re-throw so the caller can recover
   - validate project-specific deployment plumbing, including preview deployment, after the project repo and environment exist
-- `import_project` is the existing-repo adoption path:
+- `import_project` is the existing-repo adoption path — **currently scoped to Next.js repos and empty/bare repos only** (Phase 3):
+  - validate the target repo is Next.js (package.json with `"next"` in deps) or empty; fail closed with a clear error for non-Next.js repos that have a package.json; repos with no package.json proceed as empty/bare (caller responsibility)
   - connect an existing GitHub repo through the GitHub App
   - open a bootstrap PR instead of modifying the default branch directly
   - add `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, workflow wrappers, `.devcontainer/devcontainer.json`, and required infra/config files
   - enable and validate GitHub Codespaces for the adopted repository
   - provision a dedicated Azure Container Apps environment for the adopted project, plus its GitHub environment settings
   - create the adopted repo's own GitHub environments, secrets, and variables required for preview, staging, and production workflows
-  - validate project-specific deployment plumbing, including preview deployment, after the adopted repo and environment exist
   - avoid restructuring application code unless required for deployability and clearly shown in the bootstrap PR
+  - support for arbitrary existing repos of other stacks (Python, Ruby, Go, etc.) is deferred to a future phase
 - The provider tool is the canonical no-desktop trigger, but `init.sh` remains a first-class manual path for projects created outside the Claude or Codex front door.
 
 ### Generated repo model
