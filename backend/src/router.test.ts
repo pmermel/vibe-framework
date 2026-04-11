@@ -36,10 +36,17 @@ vi.mock("./handler.js", () => ({
 /**
  * Single shared express app for all router tests.
  *
+<<<<<<< HEAD
  * isDevMode() and MCP_API_KEY are both read at request time in router.ts,
  * so tests can set process.env vars directly before each request without
  * reloading the module. This eliminates vi.resetModules() and the per-test
  * TCP listener that the old buildApp() pattern required.
+=======
+ * isDevMode() in router.ts reads process.env.NODE_ENV at request time (not
+ * module load), and MCP_API_KEY is read at request time too. Tests can set
+ * either env var before a request without reloading the module, eliminating
+ * vi.resetModules() and the per-test TCP listener that buildApp() required.
+>>>>>>> 93f4b31 (fix(mcp-auth): gitignore .vibe-env, update BOOTSTRAP_CONTRACTS, eliminate vi.resetModules in router tests)
  */
 const app = express();
 app.set("trust proxy", 1);
