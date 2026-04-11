@@ -7,3 +7,5 @@ dist/
 .DS_Store
 .turbo/
 coverage/
+# Bootstrap output — contains production secrets (MCP_API_KEY, backend URLs)
+.vibe-env

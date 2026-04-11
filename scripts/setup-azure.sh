@@ -94,7 +94,30 @@ az containerapp update \
     "BACKEND_URL=$BACKEND_URL" \
   --output none
 
+echo "→ Generating MCP API key and storing as Container App secret"
+MCP_API_KEY=$(openssl rand -hex 32)
+az containerapp secret set \
+  --name "${BACKEND_APP_NAME:-vibe-backend}" \
+  --resource-group "$RESOURCE_GROUP" \
+  --secrets "mcp-api-key=$MCP_API_KEY" \
+  --output none
+
+# Wire the secret to the MCP_API_KEY environment variable so the backend can
+# read it from process.env. Container Apps secrets are not auto-injected —
+# they must be explicitly referenced via secretRef.
+az containerapp update \
+  --name "${BACKEND_APP_NAME:-vibe-backend}" \
+  --resource-group "$RESOURCE_GROUP" \
+  --set-env-vars "MCP_API_KEY=secretref:mcp-api-key" \
+  --output none
+
+# Append MCP_API_KEY to .vibe-env so init.sh and setup-github.sh can read it.
+cat >> "$REPO_ROOT/.vibe-env" <<ENVEOF
+export MCP_API_KEY="$MCP_API_KEY"
+ENVEOF
+
 echo "→ Azure provisioning complete"
 echo "   Backend URL:        $BACKEND_URL"
 echo "   ACR login server:   $ACR_LOGIN_SERVER"
 echo "   Storage account:    $STORAGE_ACCOUNT_NAME"
+echo "   MCP API key:        (written to .vibe-env)"
