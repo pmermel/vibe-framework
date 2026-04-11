@@ -39,7 +39,16 @@ export const router = Router();
 // Helpers
 // ---------------------------------------------------------------------------
 
-const isDevMode = process.env.NODE_ENV !== "production";
+/**
+ * isDevMode
+ *
+ * Returns true when NODE_ENV is not "production". Read at call time (not
+ * module load) so tests can change process.env.NODE_ENV without reloading
+ * the module, eliminating the need for vi.resetModules() in test files.
+ */
+function isDevMode(): boolean {
+  return process.env.NODE_ENV !== "production";
+}
 
 /**
  * deriveBaseUrl
@@ -103,7 +112,7 @@ router.get("/.well-known/oauth-authorization-server", (req, res) => {
 // ---------------------------------------------------------------------------
 
 router.get("/oauth/authorize", (req, res) => {
-  if (!isDevMode) {
+  if (!isDevMode()) {
     res.status(501).json({
       error: "not_implemented",
       error_description:
@@ -124,7 +133,7 @@ router.get("/oauth/authorize", (req, res) => {
 });
 
 router.post("/oauth/token", (req, res) => {
-  if (!isDevMode) {
+  if (!isDevMode()) {
     res.status(501).json({
       error: "not_implemented",
       error_description:
@@ -150,7 +159,7 @@ async function handleMcp(
   req: import("express").Request,
   res: import("express").Response
 ): Promise<void> {
-  if (!isDevMode) {
+  if (!isDevMode()) {
     // /mcp is disabled in production until real token validation is implemented.
     // Accepting an arbitrary bearer token would expose privileged actions
     // (create_project, configure_repo, configure_cloud) to any caller who can

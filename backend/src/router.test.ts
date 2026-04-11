@@ -1,6 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import express from "express";
 import request from "supertest";
+import { router } from "./router.js";
 
 // Mock MCP server so these tests don't spin up real transport
 vi.mock("./lib/mcp-server.js", () => ({
@@ -26,30 +27,27 @@ vi.mock("./handler.js", () => ({
 }));
 
 /**
- * Creates a fresh app with the router mounted, isolated from global NODE_ENV.
- * We reset modules and re-import so the isDevMode constant is re-evaluated.
+ * Single shared express app for all router tests.
+ *
+ * isDevMode() in router.ts reads process.env.NODE_ENV at request time
+ * (not module load), so tests can change the env var per-test without
+ * reloading the module. This eliminates vi.resetModules() and the
+ * per-test TCP listener that the old buildApp() pattern required.
  */
-async function buildApp(nodeEnv: string) {
-  process.env.NODE_ENV = nodeEnv;
-  vi.resetModules();
-  const { router } = await import("./router.js");
-  const app = express();
-  app.set("trust proxy", 1);
-  app.use(express.json());
-  app.use(router);
-  return app;
-}
+const app = express();
+app.set("trust proxy", 1);
+app.use(express.json());
+app.use(router);
 
 describe("router — OAuth token endpoints", () => {
   const originalEnv = process.env.NODE_ENV;
 
   afterEach(() => {
     process.env.NODE_ENV = originalEnv;
-    vi.resetModules();
   });
 
   it("POST /oauth/token returns a token in dev mode", async () => {
-    const app = await buildApp("development");
+    process.env.NODE_ENV = "development";
     const res = await request(app).post("/oauth/token").send({});
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ token_type: "Bearer" });
@@ -57,21 +55,21 @@ describe("router — OAuth token endpoints", () => {
   });
 
   it("POST /oauth/token returns 501 in production mode", async () => {
-    const app = await buildApp("production");
+    process.env.NODE_ENV = "production";
     const res = await request(app).post("/oauth/token").send({});
     expect(res.status).toBe(501);
     expect(res.body.error).toBe("not_implemented");
   });
 
   it("GET /oauth/authorize returns 501 in production mode", async () => {
-    const app = await buildApp("production");
+    process.env.NODE_ENV = "production";
     const res = await request(app).get("/oauth/authorize?redirect_uri=https://example.com/cb");
     expect(res.status).toBe(501);
     expect(res.body.error).toBe("not_implemented");
   });
 
   it("GET /oauth/authorize redirects in dev mode", async () => {
-    const app = await buildApp("development");
+    process.env.NODE_ENV = "development";
     const res = await request(app)
       .get("/oauth/authorize?redirect_uri=https://example.com/cb&state=xyz")
       .redirects(0);
@@ -82,10 +80,8 @@ describe("router — OAuth token endpoints", () => {
 });
 
 describe("router — OAuth discovery metadata", () => {
-  afterEach(() => { vi.resetModules(); });
-
   it("GET /.well-known/oauth-protected-resource is always available", async () => {
-    const app = await buildApp("production");
+    process.env.NODE_ENV = "production";
     const res = await request(app).get("/.well-known/oauth-protected-resource");
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("resource");
@@ -93,7 +89,7 @@ describe("router — OAuth discovery metadata", () => {
   });
 
   it("GET /.well-known/oauth-authorization-server is always available", async () => {
-    const app = await buildApp("production");
+    process.env.NODE_ENV = "production";
     const res = await request(app).get("/.well-known/oauth-authorization-server");
     expect(res.status).toBe(200);
     expect(res.body).toHaveProperty("token_endpoint");
@@ -101,7 +97,7 @@ describe("router — OAuth discovery metadata", () => {
   });
 
   it("GET /.well-known/oauth-authorization-server respects forwarded https", async () => {
-    const app = await buildApp("development");
+    process.env.NODE_ENV = "development";
     const res = await request(app)
       .get("/.well-known/oauth-authorization-server")
       .set("Host", "tough-hornets-build.loca.lt")
@@ -118,10 +114,14 @@ describe("router — OAuth discovery metadata", () => {
 });
 
 describe("router — /mcp auth gate", () => {
-  afterEach(() => { vi.resetModules(); });
+  const originalEnv = process.env.NODE_ENV;
+
+  afterEach(() => {
+    process.env.NODE_ENV = originalEnv;
+  });
 
   it("POST /mcp returns 501 in production (disabled until real auth is implemented)", async () => {
-    const app = await buildApp("production");
+    process.env.NODE_ENV = "production";
     const res = await request(app)
       .post("/mcp")
       .set("Content-Type", "application/json")
@@ -131,7 +131,7 @@ describe("router — /mcp auth gate", () => {
   });
 
   it("POST /mcp returns 501 in production even with a Bearer token present", async () => {
-    const app = await buildApp("production");
+    process.env.NODE_ENV = "production";
     const res = await request(app)
       .post("/mcp")
       .set("Content-Type", "application/json")
