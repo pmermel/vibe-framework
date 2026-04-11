@@ -288,7 +288,7 @@ approvers:
 - Defer `import_project`, `generate_assets`, additional templates, and broad adapter expansion until the first walking skeleton is proven end to end.
 
 ### Phase 4
-- Validate the full issue-to-preview-to-staging-to-production loop on a sample Next.js project.
+- Validate the full issue-to-preview-to-staging-to-production loop on a sample Next.js project by following `.ai/context/PHASE4_VALIDATION_RUNBOOK.md`.
 - Add React/Vite and Node API templates after the default path is proven.
 
 ## Day-to-day Workflow

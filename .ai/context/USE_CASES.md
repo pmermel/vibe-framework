@@ -6,6 +6,8 @@ It is not a second `plan.md`. `plan.md` remains the architecture and implementat
 
 If implementation, issues, or PRs conflict with these journeys, this file and `plan.md` win.
 
+The concrete pass/fail checklist for proving these journeys as part of Phase 4 lives in `.ai/context/PHASE4_VALIDATION_RUNBOOK.md`.
+
 ## Experience Tiers
 
 ### Bootstrap tier
