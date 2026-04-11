@@ -355,17 +355,6 @@ describe("createProject — unimplemented template/adapter combos", () => {
     expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
   });
 
-  it("returns not_implemented for node-api (Phase 4 deferred)", async () => {
-    const result = await createProject({
-      name: "my-app",
-      template: "node-api",
-      github_owner: "acme",
-      approvers: ["alice"],
-    });
-    expect(result).toEqual({ status: "not_implemented" });
-    expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
-  });
-
   it("returns not_implemented for static-web-app adapter (Phase 3 deferred)", async () => {
     const result = await createProject({
       name: "my-app",
@@ -571,6 +560,42 @@ describe("createProject — cloud and repo orchestration", () => {
       azure_region: "westus2",
       adapter: "container-app",
     });
+  });
+
+  it("supports node-api on the container-app path", async () => {
+    const result = (await createProject({
+      name: "my-app",
+      template: "node-api",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    })) as Record<string, unknown>;
+
+    expect(result.repo_url).toBe("https://github.com/acme/my-app");
+    expect(mockConfigureCloud).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_name: "my-app",
+        github_repo: "acme-org/my-app",
+        adapter: "container-app",
+      })
+    );
+  });
+
+  it("creates a node-api scaffold when template is node-api", async () => {
+    await createProject({
+      name: "my-app",
+      template: "node-api",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    const blobBodies = mockOctokit.git.createBlob.mock.calls.map(
+      ([payload]: [{ content: string }]) => payload.content
+    );
+
+    expect(blobBodies.some((content: string) => content.includes("template: node-api"))).toBe(true);
+    expect(blobBodies.some((content: string) => content.includes("express"))).toBe(true);
   });
 
   it("calls configureRepo with per-environment azure_client_ids from configureCloud output", async () => {

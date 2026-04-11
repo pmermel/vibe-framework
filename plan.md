@@ -289,7 +289,8 @@ approvers:
 
 ### Phase 4
 - Validate the full issue-to-preview-to-staging-to-production loop on a sample Next.js project by following `.ai/context/PHASE4_VALIDATION_RUNBOOK.md`.
-- Add React/Vite and Node API templates after the default path is proven.
+- Add React/Vite after the default path is proven and the static-web-app adapter is ready.
+- Node API scaffold support is now implemented on the container-app path.
 
 ## Day-to-day Workflow
 1. Create a GitHub issue from phone or desktop.

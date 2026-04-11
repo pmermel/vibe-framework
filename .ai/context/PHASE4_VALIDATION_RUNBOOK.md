@@ -19,7 +19,6 @@ It does **not** validate Phase 4 expansion work such as:
 
 - `react-vite`
 - `static-web-app`
-- `node-api`
 - broader `import_project` stack support
 
 Those stay blocked until this runbook is complete.
@@ -146,7 +145,7 @@ If any step fails:
 - open a focused follow-up issue when the fix is not trivial
 - keep validation work centered on the default path until the blocker is cleared
 
-Do **not** treat partial success as clearance to move on to `node-api`, `react-vite`, or `static-web-app`.
+Do **not** treat partial success as clearance to move on to remaining expansion work such as `react-vite`, `static-web-app`, or broader adoption-path support.
 
 ## Exit Criteria
 
@@ -154,6 +153,5 @@ Phase 4 can expand only after this runbook is fully satisfied and the evidence i
 
 At that point, the recommended next order is:
 
-1. `node-api`
-2. `react-vite`
-3. `static-web-app` broadening beyond the first adapter-specific implementation
+1. `react-vite`
+2. `static-web-app` broadening beyond the first adapter-specific implementation
