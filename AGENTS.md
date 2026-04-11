@@ -40,6 +40,9 @@ Read `.ai/context/USE_CASES.md` alongside `plan.md` before making architecture, 
 cd backend && npm ci
 
 # Run tests
+# Note: router/MCP integration tests still assume listener access in some
+# restricted sandboxes; record that clearly if you hit EPERM until test
+# hardening lands.
 cd backend && npm test
 
 # Type-check the backend
@@ -48,10 +51,11 @@ cd backend && npx tsc --noEmit
 # Validate Bicep templates
 az bicep build --file infrastructure/container-apps-env.bicep
 
-# Run init.sh (framework bootstrap) — Phase 3, not yet implemented
-# bash scripts/init.sh
+# Run init.sh (framework bootstrap)
+bash scripts/init.sh
 
 # Lint
+# Note: this is currently a placeholder command until real linting is wired up.
 cd backend && npm run lint
 
 # Validate Codespaces configuration (framework repo)
@@ -63,11 +67,11 @@ bash scripts/validate-codespaces.sh
 ```
 vibe-framework/
 ├── .ai/context/          # Shared conventions for both agents
+├── backend/              # TypeScript backend, MCP server, and scaffold generators
 ├── .devcontainer/        # Codespaces config (Claude Code path)
 ├── .github/workflows/    # Reusable pipeline logic — all projects call these
 ├── infrastructure/       # Azure Bicep templates
-├── scripts/              # init.sh, setup-azure.sh, setup-github.sh (Phase 3 — not yet implemented)
-├── templates/            # Project scaffolds — Phase 3; scaffold logic currently in backend/src/scaffold/
+├── scripts/              # init.sh, setup-azure.sh, setup-github.sh, validate-codespaces.sh
 ├── AGENTS.md             # This file — Codex operating instructions
 ├── CLAUDE.md             # Claude Code operating instructions
 ├── plan.md               # Authoritative build spec
