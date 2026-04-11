@@ -23,8 +23,58 @@ steps required to close the validation gate in `plan.md` and `BOOTSTRAP_CONTRACT
 
 **Caveats:**
 - Validation was run against a localtunnel-exposed local backend (not a deployed instance). Localtunnel was flaky — ngrok recommended for future validation runs.
-- Auth used development stubs (`vibe-dev-token`) — no real credential validation. Real OAuth must be implemented before the backend is exposed in production.
-- `/mcp` is disabled in production (returns 501) until real OAuth is wired. REST `POST /action` is the only live production path today.
+- Validation used development stubs (`vibe-dev-token`) — no real credential validation. Production deployments now use Bearer token auth via `MCP_API_KEY` (see Production Auth Model below).
+
+---
+
+## Production Auth Model
+
+`/mcp` is protected by a static Bearer token in production. `setup-azure.sh`
+generates an `MCP_API_KEY` (32-byte random hex) and stores it as a Container App
+secret, then wires it to `process.env.MCP_API_KEY` in the running container.
+`setup-github.sh` displays the key at the end of bootstrap so the operator can
+configure AI agent clients.
+
+**Auth behaviour summary:**
+
+| Environment | MCP_API_KEY set? | /mcp behaviour |
+|---|---|---|
+| Production | Yes | 401 unless `Authorization: Bearer <key>` matches |
+| Production | No | 501 (safe default — key not yet provisioned) |
+| Dev / local | No | Open access (dev stubs issue `vibe-dev-token`) |
+| Dev / local | Yes | 401 unless correct Bearer token — same as production |
+
+**Registering with Claude Code (production):**
+
+```json
+{
+  "mcpServers": {
+    "vibe-backend": {
+      "type": "http",
+      "url": "<BACKEND_URL>/mcp",
+      "headers": { "Authorization": "Bearer <MCP_API_KEY>" }
+    }
+  }
+}
+```
+
+**Registering with Codex (production):**
+
+Provide the same endpoint and add `Authorization: Bearer <MCP_API_KEY>` as a
+custom header in the Codex MCP connector configuration.
+
+**Rotating the key:**
+
+```bash
+NEW_KEY=$(openssl rand -hex 32)
+az containerapp secret set \
+  --name <BACKEND_APP_NAME> --resource-group <RG> \
+  --secrets "mcp-api-key=$NEW_KEY"
+az containerapp update \
+  --name <BACKEND_APP_NAME> --resource-group <RG> \
+  --set-env-vars "MCP_API_KEY=secretref:mcp-api-key"
+# Then update the key in all AI agent client configurations.
+```
 
 ---
 
@@ -218,7 +268,7 @@ beyond local/tunnel validation runs.
 
 **Current auth model:** `POST /action` is unauthenticated. The backend validates request parameters (Zod schemas) but does not require any credential. This is intentional for the current phase — the endpoint is protected only by obscurity (the `VIBE_BACKEND_URL` variable is not published). Adding real auth (e.g. a shared secret or OIDC token) is a future hardening step; when that happens, the `post-enrichment` job will need to pass credentials.
 
-`/mcp` is disabled in production (returns 501) until real OAuth is wired. `POST /action` is the only live production path today.
+`POST /mcp` is also available in production when `MCP_API_KEY` is configured (see Production Auth Model above). Without `MCP_API_KEY`, `/mcp` returns 501 as a safe default.
 
 ```bash
 # Health

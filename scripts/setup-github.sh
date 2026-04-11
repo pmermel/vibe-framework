@@ -157,3 +157,25 @@ echo "  2. Store AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID as"
 echo "     GitHub environment secrets for preview, staging, production"
 echo "  3. Verify the backend health: curl $BACKEND_URL/health"
 echo ""
+
+# If MCP_API_KEY is available (sourced from .vibe-env by init.sh), display it
+# so the operator can configure AI agent clients.
+if [[ -n "${MCP_API_KEY:-}" ]]; then
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  MCP API Key — save this now, it will not be shown again"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "  Key: $MCP_API_KEY"
+  echo ""
+  echo "  Register the backend as an MCP server in your AI agent client:"
+  echo "  - Endpoint:       $BACKEND_URL/mcp"
+  echo "  - Auth header:    Authorization: Bearer $MCP_API_KEY"
+  echo ""
+  echo "  For Claude Code, add to ~/.claude.json under mcpServers:"
+  echo "    \"vibe-backend\": {"
+  echo "      \"type\": \"http\","
+  echo "      \"url\": \"$BACKEND_URL/mcp\","
+  echo "      \"headers\": { \"Authorization\": \"Bearer $MCP_API_KEY\" }"
+  echo "    }"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo ""
+fi

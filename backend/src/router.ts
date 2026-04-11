@@ -10,28 +10,36 @@ import { createMcpServer } from "./lib/mcp-server.js";
  *
  * Always-available:
  * - GET  /health  — liveness probe, no auth
- * - POST /action  — direct action dispatcher for local testing and CI
+ * - POST /action  — direct action dispatcher for GitHub Actions workflow enrichment
  * - GET  /.well-known/oauth-protected-resource   — OAuth resource metadata (discovery only)
  * - GET  /.well-known/oauth-authorization-server — OAuth server metadata (discovery only)
  *
- * Dev-mode only (NODE_ENV !== "production"):
+ * Dev-mode only (NODE_ENV !== "production" and no MCP_API_KEY set):
  * - GET  /oauth/authorize — immediately issues a code (no user interaction)
  * - POST /oauth/token     — exchanges any code for a static dev token
  *
- * Dev-mode only — /mcp (NODE_ENV !== "production"):
- * - POST /mcp   — StreamableHTTP MCP transport; tool list + tool call
- * - GET  /mcp   — SSE upgrade path used by some MCP clients
+ * /mcp endpoint — StreamableHTTP MCP transport; tool list + tool call:
+ * - POST /mcp
+ * - GET  /mcp  — SSE upgrade path used by some MCP clients
  * - DELETE /mcp — session teardown
  *
- * ⚠️  Auth model:
- *   In dev mode (NODE_ENV !== "production"), the OAuth token endpoints issue a
- *   static dev token without validating credentials. The /mcp endpoint accepts
- *   any request. This is intentional for the Phase 2 MCP validation run.
+ * ⚠️  Auth model for /mcp:
  *
- *   In production, /oauth/authorize, /oauth/token, and /mcp all return
- *   501 Not Implemented. /mcp remains disabled until real token validation
- *   is implemented — accepting arbitrary bearer tokens would expose privileged
- *   actions (create_project, configure_repo, configure_cloud) to any caller.
+ *   Production with MCP_API_KEY set:
+ *     /mcp requires `Authorization: Bearer <MCP_API_KEY>`. Requests without a
+ *     valid token receive 401. This is the production auth model — set MCP_API_KEY
+ *     as a Container App secret (setup-azure.sh does this automatically).
+ *
+ *   Dev mode (NODE_ENV !== "production") without MCP_API_KEY:
+ *     /mcp accepts any request. The OAuth token endpoints issue a static dev
+ *     token without validating credentials. Intentional for local validation runs.
+ *
+ *   Production without MCP_API_KEY:
+ *     /mcp returns 501. Safe default — prevents accidental exposure before the
+ *     operator has completed MCP_API_KEY setup.
+ *
+ *   Both isDevMode() and MCP_API_KEY are read at request time (not module load)
+ *   so tests can set process.env vars without reloading the module.
  */
 export const router = Router();
 
@@ -67,6 +75,44 @@ export function deriveBaseUrl(protocol: string, host: string): string {
   return `${protocol}://${host}`;
 }
 
+/**
+ * validateMcpToken
+ *
+ * Validates the Authorization header against process.env.MCP_API_KEY.
+ * Returns true if the request is authorized (or if no key is configured).
+ * Returns false and sends a 401 response when validation fails.
+ *
+ * Reads MCP_API_KEY at call time so tests can change process.env without
+ * reloading the module.
+ */
+function validateMcpToken(
+  req: import("express").Request,
+  res: import("express").Response
+): boolean {
+  const apiKey = process.env.MCP_API_KEY;
+  if (!apiKey) return true; // No key configured — skip auth (dev mode)
+
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith("Bearer ")) {
+    res.status(401).json({
+      error: "unauthorized",
+      error_description:
+        "Bearer token required. Set Authorization: Bearer <MCP_API_KEY>.",
+    });
+    return false;
+  }
+
+  if (auth.slice(7) !== apiKey) {
+    res.status(401).json({
+      error: "unauthorized",
+      error_description: "Invalid bearer token.",
+    });
+    return false;
+  }
+
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Health check — always available
 // ---------------------------------------------------------------------------
@@ -76,7 +122,7 @@ router.get("/health", (_req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// REST action endpoint — backwards-compatible local / CI surface
+// REST action endpoint — production path for GitHub Actions workflow enrichment
 // ---------------------------------------------------------------------------
 
 router.post("/action", handleAction);
@@ -106,18 +152,19 @@ router.get("/.well-known/oauth-authorization-server", (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// OAuth token endpoints — DEV MODE ONLY
-// In production these return 501. Replace with real auth middleware before
-// exposing the backend publicly.
+// OAuth token endpoints — DEV MODE ONLY (no MCP_API_KEY configured)
+// In production (or when MCP_API_KEY is set), these return 501.
+// Replace with real auth middleware before exposing the backend publicly
+// without MCP_API_KEY protection.
 // ---------------------------------------------------------------------------
 
 router.get("/oauth/authorize", (req, res) => {
-  if (!isDevMode()) {
+  if (!isDevMode() || process.env.MCP_API_KEY) {
     res.status(501).json({
       error: "not_implemented",
       error_description:
-        "Dev auth stubs are disabled in production. " +
-        "Configure real OAuth middleware before exposing this endpoint.",
+        "Dev auth stubs are disabled when MCP_API_KEY is set or in production. " +
+        "Configure real OAuth middleware or use Bearer token auth.",
     });
     return;
   }
@@ -133,12 +180,12 @@ router.get("/oauth/authorize", (req, res) => {
 });
 
 router.post("/oauth/token", (req, res) => {
-  if (!isDevMode()) {
+  if (!isDevMode() || process.env.MCP_API_KEY) {
     res.status(501).json({
       error: "not_implemented",
       error_description:
-        "Dev auth stubs are disabled in production. " +
-        "Configure real OAuth middleware before exposing this endpoint.",
+        "Dev auth stubs are disabled when MCP_API_KEY is set or in production. " +
+        "Configure real OAuth middleware or use Bearer token auth.",
     });
     return;
   }
@@ -152,25 +199,34 @@ router.post("/oauth/token", (req, res) => {
 
 // ---------------------------------------------------------------------------
 // MCP endpoint — StreamableHTTP transport, stateless (no sessions)
-// Dev-mode only. Returns 501 in production until real token validation exists.
+//
+// Auth behaviour (both read at request time):
+//   - MCP_API_KEY set          → Bearer token required (dev or production)
+//   - MCP_API_KEY not set + dev → open access (local validation runs)
+//   - MCP_API_KEY not set + prod → 501 (safe default until key is configured)
 // ---------------------------------------------------------------------------
 
 async function handleMcp(
   req: import("express").Request,
   res: import("express").Response
 ): Promise<void> {
-  if (!isDevMode()) {
-    // /mcp is disabled in production until real token validation is implemented.
-    // Accepting an arbitrary bearer token would expose privileged actions
-    // (create_project, configure_repo, configure_cloud) to any caller who can
-    // reach the endpoint. Re-enable this path once a real auth store is wired up.
+  const apiKey = process.env.MCP_API_KEY;
+
+  // Safe default: production without a key → 501.
+  // Prevents accidental exposure before MCP_API_KEY is provisioned.
+  if (!isDevMode() && !apiKey) {
     res.status(501).json({
       error: "not_implemented",
       error_description:
-        "MCP endpoint is only available in development mode. " +
-        "Configure real OAuth token validation before enabling in production.",
+        "MCP endpoint requires MCP_API_KEY to be configured in production. " +
+        "Run setup-azure.sh to provision the key, then re-deploy the backend.",
     });
     return;
+  }
+
+  // When MCP_API_KEY is set, validate the bearer token regardless of environment.
+  if (apiKey && !validateMcpToken(req, res)) {
+    return; // 401 already sent by validateMcpToken
   }
 
   const transport = new StreamableHTTPServerTransport({
