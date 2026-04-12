@@ -387,11 +387,6 @@ jobs:
 function dockerfile(): string {
   return `# Multi-stage TypeScript Node API image targeting Azure Container Apps.
 
-FROM node:20-alpine AS deps
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
@@ -427,7 +422,7 @@ function packageJson(name: string): string {
         express: "^4.21.2",
       },
       devDependencies: {
-        "@types/express": "^5.0.1",
+        "@types/express": "^4.17.21",
         "@types/node": "^20",
         tsx: "^4.19.3",
         typescript: "^5.7.3",

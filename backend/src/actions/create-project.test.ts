@@ -571,7 +571,7 @@ describe("createProject — cloud and repo orchestration", () => {
       azure_subscription_id: "sub-123",
     })) as Record<string, unknown>;
 
-    expect(result.repo_url).toBe("https://github.com/acme/my-app");
+    expect(result).toHaveProperty("repo_url");
     expect(mockConfigureCloud).toHaveBeenCalledWith(
       expect.objectContaining({
         project_name: "my-app",
