@@ -61,6 +61,12 @@ describe("generateNodeApiScaffold — vibe.yaml", () => {
     const github = parsed["github"] as Record<string, unknown>;
     expect(github["repo"]).toBe("acme/my-api");
   });
+
+  it("uses npm install (not npm ci) so CI works without a committed lockfile", () => {
+    const parsed = yaml.load(scaffold()["vibe.yaml"]) as Record<string, unknown>;
+    const build = parsed["build"] as Record<string, unknown>;
+    expect(build["install"]).toBe("npm install");
+  });
 });
 
 describe("generateNodeApiScaffold — package.json", () => {
@@ -83,6 +89,12 @@ describe("generateNodeApiScaffold — Dockerfile", () => {
     expect(dockerfile).toContain("FROM node:20-alpine");
     expect(dockerfile).toContain("COPY --from=builder /app/dist ./dist");
     expect(dockerfile).toContain('CMD ["node", "dist/index.js"]');
+  });
+
+  it("uses npm install (not npm ci) so the image builds without a lockfile", () => {
+    const dockerfile = scaffold()["Dockerfile"];
+    expect(dockerfile).toContain("RUN npm install");
+    expect(dockerfile).not.toContain("RUN npm ci");
   });
 });
 
