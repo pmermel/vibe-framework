@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { getGithubClient } from "../lib/github-client.js";
 import { generateNextjsScaffold } from "../scaffold/nextjs.js";
+import { generateNodeApiScaffold } from "../scaffold/node-api.js";
 import { configureCloud } from "./configure-cloud.js";
 import { configureRepo } from "./configure-repo.js";
 
@@ -27,8 +28,8 @@ const CreateProjectParams = z.object({
  * outputs; on failure an error comment is posted to the PR before re-throwing.
  *
  * **Template/adapter support:**
- * - Template: only `"nextjs"` is implemented. `"react-vite"` and `"node-api"` are
- *   schema-accepted but deferred to Phase 4.
+ * - Template: `"nextjs"` and `"node-api"` are implemented on the container-app path.
+ *   `"react-vite"` remains deferred to Phase 4.
  * - Adapter: only `"container-app"` is implemented. `"static-web-app"` returns
  *   `{ status: "not_implemented" }`.
  *
@@ -52,7 +53,7 @@ const CreateProjectParams = z.object({
  *
  * @param params - Must match `CreateProjectParams` schema:
  *   - `name` (string, required — new repo name)
- *   - `template` (`"nextjs"` — validated; `"react-vite"` | `"node-api"` deferred to Phase 4)
+ *   - `template` (`"nextjs"` | `"node-api"` implemented on container-app; `"react-vite"` deferred)
  *   - `adapter` (`"container-app"` — validated; `"static-web-app"` deferred to Phase 4)
  *   - `github_owner` (string, required — org or user that will own the repo)
  *   - `azure_region` (string, optional, default `"eastus2"`)
@@ -73,8 +74,9 @@ export async function createProject(params: Record<string, unknown>): Promise<un
 
   const config = parsed.data;
 
-  // Only nextjs + container-app is implemented. Others deferred to Phase 4.
-  if (config.template !== "nextjs" || config.adapter !== "container-app") {
+  // Container Apps is the only implemented adapter. For templates, nextjs and node-api
+  // are supported today; react-vite remains deferred until the static-web-app path lands.
+  if (config.adapter !== "container-app" || config.template === "react-vite") {
     return { status: "not_implemented" };
   }
 
@@ -182,14 +184,23 @@ export async function createProject(params: Record<string, unknown>): Promise<un
   const baseTreeSha = baseCommit.data.tree.sha;
 
   // Generate scaffold files
-  const scaffoldFiles = generateNextjsScaffold({
-    name: config.name,
-    github_owner: config.github_owner,
-    azure_region: config.azure_region,
-    adapter: config.adapter,
-    approvers: config.approvers,
-    framework_repo: config.framework_repo,
-  });
+  const scaffoldFiles = config.template === "node-api"
+    ? generateNodeApiScaffold({
+        name: config.name,
+        github_owner: config.github_owner,
+        azure_region: config.azure_region,
+        adapter: config.adapter,
+        approvers: config.approvers,
+        framework_repo: config.framework_repo,
+      })
+    : generateNextjsScaffold({
+        name: config.name,
+        github_owner: config.github_owner,
+        azure_region: config.azure_region,
+        adapter: config.adapter,
+        approvers: config.approvers,
+        framework_repo: config.framework_repo,
+      });
 
   // Create a blob for each file and build a tree
   const treeItems = await Promise.all(
@@ -221,7 +232,7 @@ export async function createProject(params: Record<string, unknown>): Promise<un
   const commitResponse = await octokit.git.createCommit({
     owner: config.github_owner,
     repo: config.name,
-    message: "chore(bootstrap): scaffold vibe-framework Next.js project",
+    message: `chore(bootstrap): scaffold vibe-framework ${config.template} project`,
     tree: treeResponse.data.sha,
     parents: [baseSha],
   });
@@ -255,7 +266,7 @@ export async function createProject(params: Record<string, unknown>): Promise<un
     owner: config.github_owner,
     repo: config.name,
     title: "chore(bootstrap): vibe-framework scaffold",
-    body: bootstrapPrBody(config.name, config.azure_region, undefined),
+    body: bootstrapPrBody(config.name, config.template, config.azure_region, undefined),
     head: bootstrapBranch,
     base: defaultBranch,
   });
@@ -303,7 +314,7 @@ export async function createProject(params: Record<string, unknown>): Promise<un
         owner: config.github_owner,
         repo: config.name,
         pull_number: prNumber,
-        body: bootstrapPrBody(config.name, config.azure_region, cloudOutputs),
+        body: bootstrapPrBody(config.name, config.template, config.azure_region, cloudOutputs),
       });
     }
   } catch (err: unknown) {
@@ -341,9 +352,30 @@ export async function createProject(params: Record<string, unknown>): Promise<un
 
 function bootstrapPrBody(
   name: string,
+  template: "nextjs" | "react-vite" | "node-api",
   azureRegion: string,
   cloudOutputs?: Record<string, unknown>
 ): string {
+  const templateDescription = template === "node-api"
+    ? [
+        "- `vibe.yaml` — project manifest",
+        "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
+        "- `.devcontainer/devcontainer.json` — Codespaces support",
+        "- `.github/workflows/` — thin wrappers calling vibe-framework reusable workflows",
+        "- `Dockerfile` — multi-stage Node API production image",
+        "- `package.json`, `tsconfig.json` — Node API config",
+        "- `src/index.ts` — minimal Express starter",
+      ].join("\n")
+    : [
+        "- `vibe.yaml` — project manifest",
+        "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
+        "- `.devcontainer/devcontainer.json` — Codespaces support",
+        "- `.github/workflows/` — thin wrappers calling vibe-framework reusable workflows",
+        "- `Dockerfile` — multi-stage Next.js production image",
+        "- `package.json`, `tsconfig.json`, `next.config.ts` — Next.js config",
+        "- `src/app/` — minimal app router starter",
+      ].join("\n");
+
   const azureSection = cloudOutputs
     ? `### Azure provisioning
 
@@ -368,13 +400,7 @@ This PR was opened automatically by \`create_project\`.
 
 ### What's included
 
-- \`vibe.yaml\` — project manifest
-- \`CLAUDE.md\`, \`AGENTS.md\` — provider instruction files
-- \`.devcontainer/devcontainer.json\` — Codespaces support
-- \`.github/workflows/\` — thin wrappers calling vibe-framework reusable workflows
-- \`Dockerfile\` — multi-stage Next.js production image
-- \`package.json\`, \`tsconfig.json\`, \`next.config.ts\` — Next.js config
-- \`src/app/\` — minimal app router starter
+${templateDescription}
 
 ${azureSection}
 
