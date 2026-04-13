@@ -9,8 +9,7 @@
  * - vibe.yaml, CLAUDE.md, AGENTS.md — framework manifest and agent instructions
  * - .ai/context/ — Azure targets and stack decisions (SWA-specific, no Container Registry)
  * - .devcontainer/devcontainer.json — Codespaces support (port 5173 for Vite)
- * - .github/workflows/*.yml — inline SWA deploy workflows (NOT reusable wrappers;
- *   no SWA reusable workflow exists yet in the framework)
+ * - .github/workflows/*.yml — thin wrapper workflows calling pinned reusable SWA framework workflows
  * - index.html, vite.config.ts, tsconfig.json — Vite project config
  * - src/main.tsx, src/App.tsx, src/index.css — minimal React starter
  * - src/__tests__/App.test.ts — vitest placeholder
@@ -36,15 +35,15 @@ export function generateReactViteScaffold(params: {
   const { name, github_owner, azure_region, approvers, framework_repo } = params;
 
   return {
-    "vibe.yaml": vibeYaml({ name, github_owner, azure_region, approvers }),
+    "vibe.yaml": vibeYaml({ name, github_owner, azure_region, approvers, framework_repo }),
     "CLAUDE.md": claudeMd(name),
     "AGENTS.md": agentsMd(name),
     ".ai/context/AZURE_TARGETS.md": aiContextAzureTargets({ name, github_owner, azure_region }),
     ".ai/context/STACK_DECISIONS.md": aiContextStackDecisions(name),
     ".devcontainer/devcontainer.json": devcontainer(),
-    ".github/workflows/preview.yml": previewWorkflow(name),
-    ".github/workflows/staging.yml": stagingWorkflow(name),
-    ".github/workflows/production.yml": productionWorkflow(name),
+    ".github/workflows/preview.yml": previewWrapper({ name, framework_repo }),
+    ".github/workflows/staging.yml": stagingWrapper({ name, framework_repo }),
+    ".github/workflows/production.yml": productionWrapper({ name, framework_repo }),
     "index.html": indexHtml(name),
     "vite.config.ts": viteConfig(),
     "src/main.tsx": mainTsx(),
@@ -63,6 +62,7 @@ function vibeYaml(p: {
   github_owner: string;
   azure_region: string;
   approvers: string[];
+  framework_repo: string;
 }): string {
   const approversList = p.approvers.map((a) => `  - ${a}`).join("\n");
   return `# vibe.yaml — project manifest
@@ -101,6 +101,10 @@ azure:
 github:
   repo: ${p.github_owner}/${p.name}
   issues_as_work_queue: true
+  workflow_refs:
+    preview: ${p.framework_repo}/.github/workflows/reusable-swa-preview.yml@v1
+    staging: ${p.framework_repo}/.github/workflows/reusable-swa-staging.yml@v1
+    production: ${p.framework_repo}/.github/workflows/reusable-swa-production.yml@v1
 
 approvers:
 ${approversList}
@@ -188,10 +192,11 @@ framework-level resource names in project commands.
 | Resource | Name | Notes |
 |---|---|---|
 | Static Web App | \`${p.name}-swa\` | Hosts all environments (production, staging, preview) |
-| Deployment token secret | \`AZURE_STATIC_WEB_APPS_API_TOKEN\` | Repo-level GitHub Actions secret |
 
 No Container Registry or Container Apps are used for this project. Deployment is
-handled via \`Azure/static-web-apps-deploy@v1\` using the deployment token.
+handled via the reusable SWA framework workflows (\`reusable-swa-*.yml\`), which fetch
+the SWA deployment token at runtime via OIDC login and \`az staticwebapp secrets list\`.
+No long-lived deployment token secret is stored in the repository.
 
 ## Environments
 
@@ -218,7 +223,8 @@ The OIDC token subject must match exactly for Azure login to succeed.
 
 OIDC federated credentials are provisioned by \`configure_cloud\` during bootstrap.
 Secrets \`AZURE_CLIENT_ID\`, \`AZURE_TENANT_ID\`, and \`AZURE_SUBSCRIPTION_ID\` are stored
-per GitHub environment. \`AZURE_STATIC_WEB_APPS_API_TOKEN\` is stored as a repo-level secret.
+per GitHub environment. The SWA deployment token is fetched at runtime by the
+\`reusable-swa-*.yml\` workflows via \`az staticwebapp secrets list\` — not stored as a secret.
 `;
 }
 
@@ -251,9 +257,9 @@ architectural decisions change.
 | Layer | Choice | Notes |
 |---|---|---|
 | Hosting | Azure Static Web Apps | Standard tier; supports staging + preview environments |
-| CI/CD | GitHub Actions | Inline SWA deploy workflows (no reusable wrapper yet) |
-| Auth | OIDC (no long-lived secrets) | Per-environment federated credentials |
-| Secrets | GitHub environment secrets + repo secret | OIDC creds per env; SWA token at repo level |
+| CI/CD | GitHub Actions | Thin wrappers calling pinned reusable SWA framework workflows |
+| Auth | OIDC (no long-lived secrets) | Per-environment federated credentials; SWA token fetched at runtime |
+| Secrets | GitHub environment secrets only | OIDC creds per env; no stored SWA deployment token |
 
 ## Branch Model
 
@@ -298,112 +304,61 @@ function devcontainer(): string {
   );
 }
 
-function previewWorkflow(name: string): string {
+function previewWrapper(p: { name: string; framework_repo: string }): string {
   return `name: Preview
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
     branches: ['**']
 
-permissions:
-  id-token: write
-  contents: read
-
 jobs:
   preview:
-    runs-on: ubuntu-latest
-    name: Build and Deploy Preview
-    environment: preview
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install and Build
-        if: github.event.action != 'closed'
-        run: |
-          npm install
-          npm run build
-      - name: Deploy to Preview
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: \${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          repo_token: \${{ secrets.GITHUB_TOKEN }}
-          action: \${{ github.event.action == 'closed' && 'close' || 'upload' }}
-          app_location: "/"
-          output_location: "dist"
-          skip_app_build: true
+    uses: ${p.framework_repo}/.github/workflows/reusable-swa-preview.yml@v1
+    with:
+      app_name: ${p.name}
+      resource_group: ${p.name}-rg
+      swa_name: ${p.name}-swa
+      install_command: npm install
+      build_command: npm run build
+    secrets: inherit
 `;
 }
 
-function stagingWorkflow(name: string): string {
+function stagingWrapper(p: { name: string; framework_repo: string }): string {
   return `name: Staging
 on:
   push:
     branches: [develop]
 
-permissions:
-  id-token: write
-  contents: read
-
 jobs:
   staging:
-    runs-on: ubuntu-latest
-    name: Build and Deploy Staging
-    environment: staging
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install and Build
-        run: |
-          npm install
-          npm run build
-      - name: Deploy to Staging
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: \${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          repo_token: \${{ secrets.GITHUB_TOKEN }}
-          action: upload
-          app_location: "/"
-          output_location: "dist"
-          skip_app_build: true
-          deployment_environment: staging
+    uses: ${p.framework_repo}/.github/workflows/reusable-swa-staging.yml@v1
+    with:
+      app_name: ${p.name}
+      resource_group: ${p.name}-rg
+      swa_name: ${p.name}-swa
+      install_command: npm install
+      build_command: npm run build
+    secrets: inherit
 `;
 }
 
-function productionWorkflow(name: string): string {
+function productionWrapper(p: { name: string; framework_repo: string }): string {
   return `name: Production
 on:
   push:
     branches: [main]
 
-permissions:
-  id-token: write
-  contents: read
-
 jobs:
   production:
-    runs-on: ubuntu-latest
-    name: Build and Deploy Production
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install and Build
-        run: |
-          npm install
-          npm run build
-      - name: Deploy to Production
-        uses: Azure/static-web-apps-deploy@v1
-        with:
-          azure_static_web_apps_api_token: \${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN }}
-          repo_token: \${{ secrets.GITHUB_TOKEN }}
-          action: upload
-          app_location: "/"
-          output_location: "dist"
-          skip_app_build: true
-          deployment_environment: production
+    uses: ${p.framework_repo}/.github/workflows/reusable-swa-production.yml@v1
+    with:
+      app_name: ${p.name}
+      resource_group: ${p.name}-rg
+      swa_name: ${p.name}-swa
+      install_command: npm install
+      build_command: npm run build
+    secrets: inherit
 `;
 }
 

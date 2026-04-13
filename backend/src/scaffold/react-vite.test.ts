@@ -156,27 +156,26 @@ describe("generateReactViteScaffold — index.html", () => {
   });
 });
 
-describe("generateReactViteScaffold — preview workflow", () => {
-  it("contains AZURE_STATIC_WEB_APPS_API_TOKEN secret reference", () => {
+describe("generateReactViteScaffold — preview wrapper workflow", () => {
+  it("calls reusable-swa-preview.yml@v1 via uses", () => {
     const workflow = scaffold()[".github/workflows/preview.yml"];
-    expect(workflow).toContain("AZURE_STATIC_WEB_APPS_API_TOKEN");
+    expect(workflow).toContain("reusable-swa-preview.yml@v1");
   });
 
-  it("uses Azure/static-web-apps-deploy@v1", () => {
+  it("uses secrets: inherit (not stored AZURE_STATIC_WEB_APPS_API_TOKEN)", () => {
     const workflow = scaffold()[".github/workflows/preview.yml"];
-    expect(workflow).toContain("Azure/static-web-apps-deploy@v1");
+    expect(workflow).toContain("secrets: inherit");
+    expect(workflow).not.toContain("AZURE_STATIC_WEB_APPS_API_TOKEN");
   });
 
-  it("uses npm install (not npm ci)", () => {
+  it("passes swa_name: my-site-swa", () => {
     const workflow = scaffold()[".github/workflows/preview.yml"];
-    expect(workflow).toContain("npm install");
-    expect(workflow).not.toContain("npm ci");
+    expect(workflow).toContain("swa_name: my-site-swa");
   });
 
-  it("handles 'closed' PR action for cleanup", () => {
+  it("passes install_command: npm install", () => {
     const workflow = scaffold()[".github/workflows/preview.yml"];
-    expect(workflow).toContain("closed");
-    expect(workflow).toContain("close");
+    expect(workflow).toContain("install_command: npm install");
   });
 
   it("triggers on pull_request types including closed", () => {
@@ -186,11 +185,21 @@ describe("generateReactViteScaffold — preview workflow", () => {
   });
 });
 
-describe("generateReactViteScaffold — staging workflow", () => {
-  it("uses Azure/static-web-apps-deploy@v1 with deployment_environment: staging", () => {
+describe("generateReactViteScaffold — staging wrapper workflow", () => {
+  it("calls reusable-swa-staging.yml@v1 via uses", () => {
     const workflow = scaffold()[".github/workflows/staging.yml"];
-    expect(workflow).toContain("Azure/static-web-apps-deploy@v1");
-    expect(workflow).toContain("deployment_environment: staging");
+    expect(workflow).toContain("reusable-swa-staging.yml@v1");
+  });
+
+  it("uses secrets: inherit (not stored AZURE_STATIC_WEB_APPS_API_TOKEN)", () => {
+    const workflow = scaffold()[".github/workflows/staging.yml"];
+    expect(workflow).toContain("secrets: inherit");
+    expect(workflow).not.toContain("AZURE_STATIC_WEB_APPS_API_TOKEN");
+  });
+
+  it("passes swa_name: my-site-swa", () => {
+    const workflow = scaffold()[".github/workflows/staging.yml"];
+    expect(workflow).toContain("swa_name: my-site-swa");
   });
 
   it("triggers on push to develop", () => {
@@ -199,20 +208,71 @@ describe("generateReactViteScaffold — staging workflow", () => {
   });
 });
 
-describe("generateReactViteScaffold — production workflow", () => {
-  it("uses Azure/static-web-apps-deploy@v1 with deployment_environment: production", () => {
+describe("generateReactViteScaffold — production wrapper workflow", () => {
+  it("calls reusable-swa-production.yml@v1 via uses", () => {
     const workflow = scaffold()[".github/workflows/production.yml"];
-    expect(workflow).toContain("Azure/static-web-apps-deploy@v1");
-    expect(workflow).toContain("deployment_environment: production");
+    expect(workflow).toContain("reusable-swa-production.yml@v1");
   });
 
-  it("has environment: production for GitHub approval gate", () => {
+  it("uses secrets: inherit (not stored AZURE_STATIC_WEB_APPS_API_TOKEN)", () => {
     const workflow = scaffold()[".github/workflows/production.yml"];
-    expect(workflow).toContain("environment: production");
+    expect(workflow).toContain("secrets: inherit");
+    expect(workflow).not.toContain("AZURE_STATIC_WEB_APPS_API_TOKEN");
+  });
+
+  it("passes swa_name: my-site-swa", () => {
+    const workflow = scaffold()[".github/workflows/production.yml"];
+    expect(workflow).toContain("swa_name: my-site-swa");
   });
 
   it("triggers on push to main", () => {
     const workflow = scaffold()[".github/workflows/production.yml"];
     expect(workflow).toContain("main");
+  });
+});
+
+describe("generateReactViteScaffold — no stored deployment token", () => {
+  it("preview wrapper does not contain AZURE_STATIC_WEB_APPS_API_TOKEN", () => {
+    const workflow = scaffold()[".github/workflows/preview.yml"];
+    expect(workflow).not.toContain("AZURE_STATIC_WEB_APPS_API_TOKEN");
+  });
+
+  it("staging wrapper does not contain AZURE_STATIC_WEB_APPS_API_TOKEN", () => {
+    const workflow = scaffold()[".github/workflows/staging.yml"];
+    expect(workflow).not.toContain("AZURE_STATIC_WEB_APPS_API_TOKEN");
+  });
+
+  it("production wrapper does not contain AZURE_STATIC_WEB_APPS_API_TOKEN", () => {
+    const workflow = scaffold()[".github/workflows/production.yml"];
+    expect(workflow).not.toContain("AZURE_STATIC_WEB_APPS_API_TOKEN");
+  });
+});
+
+describe("generateReactViteScaffold — vibe.yaml workflow_refs", () => {
+  it("contains github.workflow_refs section", () => {
+    const parsed = yaml.load(scaffold()["vibe.yaml"]) as Record<string, unknown>;
+    const github = parsed["github"] as Record<string, unknown>;
+    expect(github).toHaveProperty("workflow_refs");
+  });
+
+  it("workflow_refs.preview points to reusable-swa-preview.yml@v1", () => {
+    const parsed = yaml.load(scaffold()["vibe.yaml"]) as Record<string, unknown>;
+    const github = parsed["github"] as Record<string, unknown>;
+    const refs = github["workflow_refs"] as Record<string, string>;
+    expect(refs["preview"]).toContain("reusable-swa-preview.yml@v1");
+  });
+
+  it("workflow_refs.staging points to reusable-swa-staging.yml@v1", () => {
+    const parsed = yaml.load(scaffold()["vibe.yaml"]) as Record<string, unknown>;
+    const github = parsed["github"] as Record<string, unknown>;
+    const refs = github["workflow_refs"] as Record<string, string>;
+    expect(refs["staging"]).toContain("reusable-swa-staging.yml@v1");
+  });
+
+  it("workflow_refs.production points to reusable-swa-production.yml@v1", () => {
+    const parsed = yaml.load(scaffold()["vibe.yaml"]) as Record<string, unknown>;
+    const github = parsed["github"] as Record<string, unknown>;
+    const refs = github["workflow_refs"] as Record<string, string>;
+    expect(refs["production"]).toContain("reusable-swa-production.yml@v1");
   });
 });
