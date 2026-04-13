@@ -83,6 +83,10 @@ function getTenantIdFromToken(token: string): string {
  * - Returns Azure outputs (clientIds, tenantId, ACR login server, FQDNs) for
  *   the caller to pass to `configure_repo` for GitHub secret storage
  *
+ * For the static-web-app adapter: does NOT return a deployment token. The SWA
+ * deployment token is fetched at runtime by `reusable-swa-*.yml` workflows via
+ * `az staticwebapp secrets list` after OIDC login — it is never stored as a secret.
+ *
  * Why Graph API (not Bicep) for OIDC resources:
  * The `microsoftGraph` Bicep extension used by `infrastructure/oidc-federated-credential.bicep`
  * was retired in Bicep 0.31. Azure AD app registrations, service principals, and
@@ -166,7 +170,6 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
     const swaOutputs = (swaDeployment.properties?.outputs ?? {}) as Record<string, { value: string }>;
     const swaHostname: string = swaOutputs.defaultHostname?.value ?? "";
     const swaId: string = swaOutputs.swaId?.value ?? "";
-    const deploymentToken: string = swaOutputs.deploymentToken?.value ?? "";
 
     // For each GitHub Actions environment: create an Azure AD app registration,
     // service principal, and OIDC federated credential via the Microsoft Graph API,
@@ -299,7 +302,8 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
       azure_region,
       swa_hostname: swaHostname,
       swa_id: swaId,
-      deployment_token: deploymentToken,
+      // deployment_token intentionally omitted — fetched at runtime by reusable-swa-*.yml
+      // workflows via `az staticwebapp secrets list` after OIDC login. No long-lived secret stored.
       oidc_client_ids: clientIds,
       tenant_id: tenantId,
       subscription_id: azure_subscription_id,

@@ -325,11 +325,9 @@ export async function createProject(params: Record<string, unknown>): Promise<un
         // post-enrichment workflow job can reach the backend for screenshot posting.
         // process.env.BACKEND_URL is set on the Container App by setup-azure.sh.
         backend_url: process.env.BACKEND_URL,
-        // Pass the SWA deployment token as a repo-level secret when on the SWA path.
-        // configure_repo stores it as AZURE_STATIC_WEB_APPS_API_TOKEN if present.
-        ...(cloudOutputs.deployment_token
-          ? { swa_deployment_token: cloudOutputs.deployment_token as string }
-          : {}),
+        // No swa_deployment_token — the SWA deployment token is fetched at runtime
+        // by reusable-swa-*.yml workflows via `az staticwebapp secrets list` after
+        // OIDC login. It is never stored as a repo or environment secret.
       });
 
       repoConfigured = true;
@@ -397,7 +395,7 @@ function bootstrapPrBody(
       "- `vibe.yaml` — project manifest",
       "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
       "- `.devcontainer/devcontainer.json` — Codespaces support (port 5173)",
-      "- `.github/workflows/` — inline Azure Static Web Apps deploy workflows",
+      "- `.github/workflows/` — thin wrappers calling pinned reusable SWA framework workflows",
       "- `index.html`, `vite.config.ts` — Vite project config",
       "- `package.json`, `tsconfig.json` — React/Vite config",
       "- `src/` — minimal React starter (App.tsx, main.tsx)",
@@ -428,7 +426,7 @@ function bootstrapPrBody(
 
 GitHub environments (\`preview\`, \`staging\`, \`production\`) have been configured with
 per-environment \`AZURE_CLIENT_ID\`, \`AZURE_TENANT_ID\`, and \`AZURE_SUBSCRIPTION_ID\` secrets.
-\`AZURE_STATIC_WEB_APPS_API_TOKEN\` has been stored as a repo-level secret.`;
+The SWA deployment token is fetched at runtime by the reusable workflow via OIDC — no long-lived token is stored.`;
     } else {
       // Container App path
       azureSection = `### Azure provisioning

@@ -186,9 +186,9 @@ describe("configureCloud — static-web-app adapter", () => {
     expect(result.swa_hostname).toBe("gentle-wave-abc.azurestaticapps.net");
   });
 
-  it("returns deployment_token from deployment outputs", async () => {
+  it("does NOT return deployment_token (fetched at runtime by reusable-swa-*.yml workflows)", async () => {
     const result = await configureCloud(swaParams) as Record<string, unknown>;
-    expect(result.deployment_token).toBe("swa-token-abc123");
+    expect(result).not.toHaveProperty("deployment_token");
   });
 
   it("returns swa_id from deployment outputs", async () => {

@@ -109,7 +109,7 @@ const swaCloudOutputs = {
   azure_region: "eastus2",
   swa_hostname: "gentle-wave-abc.azurestaticapps.net",
   swa_id: "/subscriptions/sub-123/resourceGroups/my-site-rg/providers/Microsoft.Web/staticSites/my-site-swa",
-  deployment_token: "swa-token-abc123",
+  // deployment_token intentionally absent — fetched at runtime by reusable-swa-*.yml workflows
   oidc_client_ids: {
     preview: "client-preview-111",
     staging: "client-staging-222",
@@ -832,7 +832,7 @@ describe("createProject — react-vite on the static-web-app path", () => {
     );
   });
 
-  it("passes swa_deployment_token from configureCloud output to configureRepo", async () => {
+  it("does NOT pass swa_deployment_token to configureRepo (token is fetched at runtime)", async () => {
     await createProject({
       name: "my-site",
       template: "react-vite",
@@ -842,11 +842,8 @@ describe("createProject — react-vite on the static-web-app path", () => {
       azure_subscription_id: "sub-123",
     });
 
-    expect(mockConfigureRepo).toHaveBeenCalledWith(
-      expect.objectContaining({
-        swa_deployment_token: "swa-token-abc123",
-      })
-    );
+    const repoCall = mockConfigureRepo.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(repoCall).not.toHaveProperty("swa_deployment_token");
   });
 
   it("creates a react-vite scaffold when template is react-vite", async () => {
@@ -867,10 +864,7 @@ describe("createProject — react-vite on the static-web-app path", () => {
     expect(blobBodies.some((content: string) => content.includes("react"))).toBe(true);
   });
 
-  it("does NOT pass swa_deployment_token to configureRepo when deployment_token is absent", async () => {
-    const cloudOutputsWithoutToken = { ...swaCloudOutputs, deployment_token: undefined };
-    mockConfigureCloud.mockResolvedValue(cloudOutputsWithoutToken);
-
+  it("configureRepo is called without deployment_token in any form", async () => {
     await createProject({
       name: "my-site",
       template: "react-vite",
@@ -881,6 +875,7 @@ describe("createProject — react-vite on the static-web-app path", () => {
     });
 
     const repoCall = mockConfigureRepo.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(repoCall.swa_deployment_token).toBeUndefined();
+    expect(repoCall).not.toHaveProperty("swa_deployment_token");
+    expect(repoCall).not.toHaveProperty("deployment_token");
   });
 });

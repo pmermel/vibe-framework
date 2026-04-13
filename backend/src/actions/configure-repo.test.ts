@@ -762,7 +762,7 @@ describe("configureRepo — VIBE_BACKEND_URL repo variable", () => {
   });
 });
 
-describe("configureRepo — swa_deployment_token repo secret", () => {
+describe("configureRepo — no stored SWA deployment token", () => {
   let mockOctokit: ReturnType<typeof makeMockOctokit>;
 
   beforeEach(() => {
@@ -774,40 +774,7 @@ describe("configureRepo — swa_deployment_token repo secret", () => {
     vi.clearAllMocks();
   });
 
-  it("calls getRepoPublicKey and createOrUpdateRepoSecret with AZURE_STATIC_WEB_APPS_API_TOKEN when swa_deployment_token is provided", async () => {
-    const result = (await configureRepo({
-      github_repo: "owner/my-app",
-      approvers: ["alice"],
-      swa_deployment_token: "swa-token-abc123",
-    })) as { swa_token_configured: boolean };
-
-    expect(result.swa_token_configured).toBe(true);
-    expect(mockOctokit.actions.getRepoPublicKey).toHaveBeenCalledWith({
-      owner: "owner",
-      repo: "my-app",
-    });
-    expect(mockOctokit.actions.createOrUpdateRepoSecret).toHaveBeenCalledWith(
-      expect.objectContaining({
-        owner: "owner",
-        repo: "my-app",
-        secret_name: "AZURE_STATIC_WEB_APPS_API_TOKEN",
-        key_id: "repo-key123",
-      })
-    );
-  });
-
-  it("returns swa_token_configured: false when swa_deployment_token is absent", async () => {
-    const result = (await configureRepo({
-      github_repo: "owner/my-app",
-      approvers: ["alice"],
-    })) as { swa_token_configured: boolean };
-
-    expect(result.swa_token_configured).toBe(false);
-    expect(mockOctokit.actions.getRepoPublicKey).not.toHaveBeenCalled();
-    expect(mockOctokit.actions.createOrUpdateRepoSecret).not.toHaveBeenCalled();
-  });
-
-  it("does NOT call createOrUpdateRepoSecret when swa_deployment_token is absent", async () => {
+  it("never calls createOrUpdateRepoSecret (SWA token is fetched at runtime, not stored)", async () => {
     await configureRepo({
       github_repo: "owner/my-app",
       approvers: ["alice"],
@@ -817,5 +784,14 @@ describe("configureRepo — swa_deployment_token repo secret", () => {
     });
 
     expect(mockOctokit.actions.createOrUpdateRepoSecret).not.toHaveBeenCalled();
+  });
+
+  it("return value does not include swa_token_configured field", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+    })) as Record<string, unknown>;
+
+    expect(result).not.toHaveProperty("swa_token_configured");
   });
 });
