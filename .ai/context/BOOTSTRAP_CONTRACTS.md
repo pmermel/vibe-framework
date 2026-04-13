@@ -6,9 +6,9 @@ Defines the contracts for all bootstrap actions in vibe-framework. Both provider
 
 | Action | Status | Notes |
 |---|---|---|
-| `create_project` (nextjs/node-api + container-app) | ✅ Implemented | Full bootstrap orchestrator: creates GitHub repo, scaffolds the selected supported template, enables Codespaces, opens bootstrap PR immediately (GitHub-centered handoff surface exists before provisioning), then calls `configure_cloud` + `configure_repo` when `azure_subscription_id` is provided; updates PR body with Azure outputs on success; posts error comment to PR on provisioning failure and re-throws. `configure_repo` receives per-environment `azure_client_ids` map from `configure_cloud` output. `react-vite` remains deferred to the later static-web-app expansion. |
-| `configure_repo` | ✅ Implemented | Branch protections, environments, labels, OIDC secrets via GitHub App |
-| `configure_cloud` | ✅ Implemented | Deploys `container-apps-env.json` ARM template; provisions OIDC credentials via Microsoft Graph REST API; assigns Contributor + AcrPush roles via ARM REST; idempotent (check-before-create + deterministic GUID names); returns Azure outputs for `configure_repo` |
+| `create_project` (nextjs/node-api + container-app, react-vite + static-web-app) | ✅ Implemented | Full bootstrap orchestrator: creates GitHub repo, scaffolds the selected supported template, enables Codespaces, opens bootstrap PR immediately (GitHub-centered handoff surface exists before provisioning), then calls `configure_cloud` + `configure_repo` when `azure_subscription_id` is provided; updates PR body with Azure outputs on success; posts error comment to PR on provisioning failure and re-throws. `configure_repo` receives per-environment `azure_client_ids` map from `configure_cloud` output. For the react-vite+static-web-app path, `swa_deployment_token` is also passed to `configure_repo` which stores it as `AZURE_STATIC_WEB_APPS_API_TOKEN`. |
+| `configure_repo` | ✅ Implemented | Branch protections, environments, labels, OIDC secrets via GitHub App. Accepts optional `swa_deployment_token` to store `AZURE_STATIC_WEB_APPS_API_TOKEN` as a repo-level secret for static-web-app projects. |
+| `configure_cloud` | ✅ Implemented | Container-app path: deploys `container-apps-env.json` ARM template; provisions OIDC credentials; assigns Contributor + AcrPush roles. Static-web-app path: deploys `static-web-app.json` ARM template; provisions OIDC credentials; assigns Contributor role only (no ACR/AcrPush). Both paths: idempotent (check-before-create + deterministic GUID names); returns Azure outputs for `configure_repo`. |
 | `post_status` | ✅ Implemented | Posts real GitHub PR comment via `issues.createComment`; returns `posted: true`, `comment_id`, `comment_url`. When `screenshot_url` is provided, embeds Markdown image in the comment body alongside the status/message. |
 | `capture_preview` | ✅ Implemented | Playwright screenshot captured and uploaded to Azure Blob Storage (`screenshots` container in framework-level Storage Account provisioned by `framework-env.bicep`). Returns `{ posted: true, screenshot_url }` when `AZURE_STORAGE_ACCOUNT_NAME` is set (managed-identity auth via `DefaultAzureCredential`). Falls back to `{ posted: false, posted_deferred_reason: "external_storage_required" }` when not configured. Blob name: `pr-{pr_number}/{timestamp}.png`. |
 | `import_project` | ✅ Implemented | Full adoption flow: validates repo access, enables Codespaces (best-effort), opens bootstrap PR first (PR-first ordering — same as `create_project`), calls `configure_cloud` + `configure_repo`, updates PR body with Azure outputs on success, posts error comment on failure and re-throws. Adoption files are framework-level only (vibe.yaml, CLAUDE.md, AGENTS.md, .ai/context/, .devcontainer/, .github/workflows/, infrastructure/) — application code is never overwritten. |
@@ -168,10 +168,9 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 
 ### Responsibilities
 - Create the project's dedicated resource group.
-- Create the project's dedicated Container Apps environment.
-- Create staging and production Container Apps.
-- Create OIDC federated credentials on the Azure service principal for `preview`, `staging`, and `production` environments.
-- Create Key Vault if needed and grant backend managed identity access.
+- **Container-app path:** Deploy `container-apps-env.json` ARM template; creates Container Apps environment, ACR, staging and production Container Apps; assigns Contributor + AcrPush roles.
+- **Static-web-app path:** Deploy `static-web-app.json` ARM template; creates Azure Static Web App; assigns Contributor role only (no ACR/AcrPush since there is no container registry).
+- Create OIDC federated credentials on the Azure service principal for `preview`, `staging`, and `production` environments (both paths).
 - Output resource IDs and URLs for use in `configure_repo`.
 
 ---
