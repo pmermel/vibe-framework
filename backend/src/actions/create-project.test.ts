@@ -101,6 +101,24 @@ const defaultCloudOutputs = {
   subscription_id: "sub-123",
 };
 
+const swaCloudOutputs = {
+  status: "provisioned",
+  project_name: "my-site",
+  github_repo: "acme/my-site",
+  resource_group: "my-site-rg",
+  azure_region: "eastus2",
+  swa_hostname: "gentle-wave-abc.azurestaticapps.net",
+  swa_id: "/subscriptions/sub-123/resourceGroups/my-site-rg/providers/Microsoft.Web/staticSites/my-site-swa",
+  deployment_token: "swa-token-abc123",
+  oidc_client_ids: {
+    preview: "client-preview-111",
+    staging: "client-staging-222",
+    production: "client-production-333",
+  },
+  tenant_id: "tenant-abc",
+  subscription_id: "sub-123",
+};
+
 function setupHappyPath(ownerType: "User" | "Organization" = "User", login = "acme") {
   mockOctokit.users.getByUsername.mockResolvedValue({ data: { type: ownerType } });
   mockOctokit.users.getAuthenticated.mockResolvedValue({ data: { login } });
@@ -344,10 +362,11 @@ describe("createProject — unimplemented template/adapter combos", () => {
     vi.clearAllMocks();
   });
 
-  it("returns not_implemented for react-vite (Phase 4 deferred)", async () => {
+  it("returns not_implemented for nextjs + static-web-app (invalid combo)", async () => {
     const result = await createProject({
       name: "my-app",
-      template: "react-vite",
+      template: "nextjs",
+      adapter: "static-web-app",
       github_owner: "acme",
       approvers: ["alice"],
     });
@@ -355,11 +374,23 @@ describe("createProject — unimplemented template/adapter combos", () => {
     expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
   });
 
-  it("returns not_implemented for static-web-app adapter (Phase 3 deferred)", async () => {
+  it("returns not_implemented for node-api + static-web-app (invalid combo)", async () => {
     const result = await createProject({
       name: "my-app",
-      template: "nextjs",
+      template: "node-api",
       adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+    expect(result).toEqual({ status: "not_implemented" });
+    expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("returns not_implemented for react-vite + container-app (invalid combo)", async () => {
+    const result = await createProject({
+      name: "my-app",
+      template: "react-vite",
+      adapter: "container-app",
       github_owner: "acme",
       approvers: ["alice"],
     });
@@ -753,5 +784,103 @@ describe("createProject — cloud and repo orchestration", () => {
     const commentBody = (mockOctokit.issues.createComment.mock.calls[0]?.[0] as { body: string }).body;
     expect(commentBody).toContain("Azure provisioning failed");
     expect(commentBody).toContain("ARM deployment failed: quota exceeded");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: react-vite + static-web-app path
+// ---------------------------------------------------------------------------
+
+describe("createProject — react-vite on the static-web-app path", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupHappyPath("Organization", "acme");
+    mockConfigureCloud.mockResolvedValue(swaCloudOutputs);
+    mockConfigureRepo.mockResolvedValue({ configured: true, swa_token_configured: true });
+  });
+
+  it("supports react-vite + static-web-app and returns repo_url", async () => {
+    const result = (await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    })) as Record<string, unknown>;
+
+    expect(result).toHaveProperty("repo_url");
+    expect(result.cloud_provisioned).toBe(true);
+    expect(result.repo_configured).toBe(true);
+  });
+
+  it("calls configureCloud with adapter: static-web-app", async () => {
+    await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    expect(mockConfigureCloud).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_name: "my-site",
+        adapter: "static-web-app",
+      })
+    );
+  });
+
+  it("passes swa_deployment_token from configureCloud output to configureRepo", async () => {
+    await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    expect(mockConfigureRepo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        swa_deployment_token: "swa-token-abc123",
+      })
+    );
+  });
+
+  it("creates a react-vite scaffold when template is react-vite", async () => {
+    await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    const blobBodies = mockOctokit.git.createBlob.mock.calls.map(
+      ([payload]: [{ content: string }]) => payload.content
+    );
+
+    expect(blobBodies.some((content: string) => content.includes("template: react-vite"))).toBe(true);
+    expect(blobBodies.some((content: string) => content.includes("react"))).toBe(true);
+  });
+
+  it("does NOT pass swa_deployment_token to configureRepo when deployment_token is absent", async () => {
+    const cloudOutputsWithoutToken = { ...swaCloudOutputs, deployment_token: undefined };
+    mockConfigureCloud.mockResolvedValue(cloudOutputsWithoutToken);
+
+    await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    const repoCall = mockConfigureRepo.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(repoCall.swa_deployment_token).toBeUndefined();
   });
 });

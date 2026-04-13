@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getGithubClient } from "../lib/github-client.js";
 import { generateNextjsScaffold } from "../scaffold/nextjs.js";
 import { generateNodeApiScaffold } from "../scaffold/node-api.js";
+import { generateReactViteScaffold } from "../scaffold/react-vite.js";
 import { configureCloud } from "./configure-cloud.js";
 import { configureRepo } from "./configure-repo.js";
 
@@ -29,9 +30,9 @@ const CreateProjectParams = z.object({
  *
  * **Template/adapter support:**
  * - Template: `"nextjs"` and `"node-api"` are implemented on the container-app path.
- *   `"react-vite"` remains deferred to Phase 4.
- * - Adapter: only `"container-app"` is implemented. `"static-web-app"` returns
- *   `{ status: "not_implemented" }`.
+ *   `"react-vite"` is implemented on the static-web-app path.
+ * - Adapter: `"container-app"` (nextjs, node-api) and `"static-web-app"` (react-vite) are
+ *   both implemented. Invalid combos (e.g. nextjs+static-web-app) return `not_implemented`.
  *
  * **Subscription ID resolution:**
  * `azure_subscription_id` may be omitted by the caller — the backend falls back to
@@ -53,8 +54,8 @@ const CreateProjectParams = z.object({
  *
  * @param params - Must match `CreateProjectParams` schema:
  *   - `name` (string, required — new repo name)
- *   - `template` (`"nextjs"` | `"node-api"` implemented on container-app; `"react-vite"` deferred)
- *   - `adapter` (`"container-app"` — validated; `"static-web-app"` deferred to Phase 4)
+ *   - `template` (`"nextjs"` | `"node-api"` on container-app; `"react-vite"` on static-web-app)
+ *   - `adapter` (`"container-app"` for nextjs/node-api; `"static-web-app"` for react-vite)
  *   - `github_owner` (string, required — org or user that will own the repo)
  *   - `azure_region` (string, optional, default `"eastus2"`)
  *   - `azure_subscription_id` (string, optional) — falls back to `AZURE_SUBSCRIPTION_ID` env var
@@ -74,9 +75,16 @@ export async function createProject(params: Record<string, unknown>): Promise<un
 
   const config = parsed.data;
 
-  // Container Apps is the only implemented adapter. For templates, nextjs and node-api
-  // are supported today; react-vite remains deferred until the static-web-app path lands.
-  if (config.adapter !== "container-app" || config.template === "react-vite") {
+  // Valid template+adapter combos:
+  //   nextjs   + container-app   ✅
+  //   node-api + container-app   ✅
+  //   react-vite + static-web-app ✅
+  // All other combos are not implemented.
+  const validCombo =
+    (config.adapter === "container-app" && (config.template === "nextjs" || config.template === "node-api")) ||
+    (config.adapter === "static-web-app" && config.template === "react-vite");
+
+  if (!validCombo) {
     return { status: "not_implemented" };
   }
 
@@ -183,24 +191,36 @@ export async function createProject(params: Record<string, unknown>): Promise<un
   });
   const baseTreeSha = baseCommit.data.tree.sha;
 
-  // Generate scaffold files
-  const scaffoldFiles = config.template === "node-api"
-    ? generateNodeApiScaffold({
-        name: config.name,
-        github_owner: config.github_owner,
-        azure_region: config.azure_region,
-        adapter: config.adapter,
-        approvers: config.approvers,
-        framework_repo: config.framework_repo,
-      })
-    : generateNextjsScaffold({
-        name: config.name,
-        github_owner: config.github_owner,
-        azure_region: config.azure_region,
-        adapter: config.adapter,
-        approvers: config.approvers,
-        framework_repo: config.framework_repo,
-      });
+  // Generate scaffold files based on template
+  let scaffoldFiles: Record<string, string>;
+  if (config.template === "node-api") {
+    scaffoldFiles = generateNodeApiScaffold({
+      name: config.name,
+      github_owner: config.github_owner,
+      azure_region: config.azure_region,
+      adapter: config.adapter,
+      approvers: config.approvers,
+      framework_repo: config.framework_repo,
+    });
+  } else if (config.template === "react-vite") {
+    scaffoldFiles = generateReactViteScaffold({
+      name: config.name,
+      github_owner: config.github_owner,
+      azure_region: config.azure_region,
+      adapter: config.adapter,
+      approvers: config.approvers,
+      framework_repo: config.framework_repo,
+    });
+  } else {
+    scaffoldFiles = generateNextjsScaffold({
+      name: config.name,
+      github_owner: config.github_owner,
+      azure_region: config.azure_region,
+      adapter: config.adapter,
+      approvers: config.approvers,
+      framework_repo: config.framework_repo,
+    });
+  }
 
   // Create a blob for each file and build a tree
   const treeItems = await Promise.all(
@@ -305,6 +325,11 @@ export async function createProject(params: Record<string, unknown>): Promise<un
         // post-enrichment workflow job can reach the backend for screenshot posting.
         // process.env.BACKEND_URL is set on the Container App by setup-azure.sh.
         backend_url: process.env.BACKEND_URL,
+        // Pass the SWA deployment token as a repo-level secret when on the SWA path.
+        // configure_repo stores it as AZURE_STATIC_WEB_APPS_API_TOKEN if present.
+        ...(cloudOutputs.deployment_token
+          ? { swa_deployment_token: cloudOutputs.deployment_token as string }
+          : {}),
       });
 
       repoConfigured = true;
@@ -356,28 +381,57 @@ function bootstrapPrBody(
   azureRegion: string,
   cloudOutputs?: Record<string, unknown>
 ): string {
-  const templateDescription = template === "node-api"
-    ? [
-        "- `vibe.yaml` — project manifest",
-        "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
-        "- `.devcontainer/devcontainer.json` — Codespaces support",
-        "- `.github/workflows/` — thin wrappers calling vibe-framework reusable workflows",
-        "- `Dockerfile` — multi-stage Node API production image",
-        "- `package.json`, `tsconfig.json` — Node API config",
-        "- `src/index.ts` — minimal Express starter",
-      ].join("\n")
-    : [
-        "- `vibe.yaml` — project manifest",
-        "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
-        "- `.devcontainer/devcontainer.json` — Codespaces support",
-        "- `.github/workflows/` — thin wrappers calling vibe-framework reusable workflows",
-        "- `Dockerfile` — multi-stage Next.js production image",
-        "- `package.json`, `tsconfig.json`, `next.config.ts` — Next.js config",
-        "- `src/app/` — minimal app router starter",
-      ].join("\n");
+  let templateDescription: string;
+  if (template === "node-api") {
+    templateDescription = [
+      "- `vibe.yaml` — project manifest",
+      "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
+      "- `.devcontainer/devcontainer.json` — Codespaces support",
+      "- `.github/workflows/` — thin wrappers calling vibe-framework reusable workflows",
+      "- `Dockerfile` — multi-stage Node API production image",
+      "- `package.json`, `tsconfig.json` — Node API config",
+      "- `src/index.ts` — minimal Express starter",
+    ].join("\n");
+  } else if (template === "react-vite") {
+    templateDescription = [
+      "- `vibe.yaml` — project manifest",
+      "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
+      "- `.devcontainer/devcontainer.json` — Codespaces support (port 5173)",
+      "- `.github/workflows/` — inline Azure Static Web Apps deploy workflows",
+      "- `index.html`, `vite.config.ts` — Vite project config",
+      "- `package.json`, `tsconfig.json` — React/Vite config",
+      "- `src/` — minimal React starter (App.tsx, main.tsx)",
+    ].join("\n");
+  } else {
+    templateDescription = [
+      "- `vibe.yaml` — project manifest",
+      "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
+      "- `.devcontainer/devcontainer.json` — Codespaces support",
+      "- `.github/workflows/` — thin wrappers calling vibe-framework reusable workflows",
+      "- `Dockerfile` — multi-stage Next.js production image",
+      "- `package.json`, `tsconfig.json`, `next.config.ts` — Next.js config",
+      "- `src/app/` — minimal app router starter",
+    ].join("\n");
+  }
 
-  const azureSection = cloudOutputs
-    ? `### Azure provisioning
+  let azureSection: string;
+  if (cloudOutputs) {
+    if (cloudOutputs.swa_hostname) {
+      // Static Web App path
+      azureSection = `### Azure provisioning
+
+| Resource | Value |
+|---|---|
+| Static Web App hostname | \`${cloudOutputs.swa_hostname}\` |
+| Resource group | \`${cloudOutputs.resource_group ?? `${name}-rg`}\` |
+| Region | \`${azureRegion}\` |
+
+GitHub environments (\`preview\`, \`staging\`, \`production\`) have been configured with
+per-environment \`AZURE_CLIENT_ID\`, \`AZURE_TENANT_ID\`, and \`AZURE_SUBSCRIPTION_ID\` secrets.
+\`AZURE_STATIC_WEB_APPS_API_TOKEN\` has been stored as a repo-level secret.`;
+    } else {
+      // Container App path
+      azureSection = `### Azure provisioning
 
 | Resource | Value |
 |---|---|
@@ -388,11 +442,14 @@ function bootstrapPrBody(
 | Region | \`${azureRegion}\` |
 
 GitHub environments (\`preview\`, \`staging\`, \`production\`) have been configured with
-per-environment \`AZURE_CLIENT_ID\`, \`AZURE_TENANT_ID\`, and \`AZURE_SUBSCRIPTION_ID\` secrets.`
-    : `### Checklist
+per-environment \`AZURE_CLIENT_ID\`, \`AZURE_TENANT_ID\`, and \`AZURE_SUBSCRIPTION_ID\` secrets.`;
+    }
+  } else {
+    azureSection = `### Checklist
 
 - [ ] Azure OIDC trust configured for \`${name}\` in \`${azureRegion}\`
 - [ ] GitHub environments (\`preview\`, \`staging\`, \`production\`) configured with Azure secrets`;
+  }
 
   return `## vibe-framework Bootstrap
 
