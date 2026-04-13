@@ -27,6 +27,16 @@ const mockEnvDeploymentResult = {
   },
 };
 
+const mockSwaDeploymentResult = {
+  properties: {
+    outputs: {
+      defaultHostname: { value: "gentle-wave-abc.azurestaticapps.net" },
+      swaId: { value: "/subscriptions/sub-123/resourceGroups/my-app-rg/providers/Microsoft.Web/staticSites/my-app-swa" },
+      deploymentToken: { value: "swa-token-abc123" },
+    },
+  },
+};
+
 const mockCreateOrUpdateAndWait = vi.fn().mockResolvedValue(mockEnvDeploymentResult);
 const mockRGCreateOrUpdate = vi.fn().mockResolvedValue({});
 
@@ -127,15 +137,150 @@ describe("configureCloud — param validation", () => {
   });
 });
 
-describe("configureCloud — static-web-app adapter (deferred)", () => {
-  it("returns not_implemented for static-web-app", async () => {
-    const result = await configureCloud({
-      project_name: "my-app",
-      github_repo: "owner/my-app",
-      azure_subscription_id: "sub-123",
-      adapter: "static-web-app",
-    });
-    expect(result).toMatchObject({ status: "not_implemented" });
+describe("configureCloud — static-web-app adapter", () => {
+  const swaParams = {
+    project_name: "my-app",
+    github_repo: "owner/my-app",
+    azure_subscription_id: "sub-123",
+    azure_region: "eastus2",
+    adapter: "static-web-app",
+  };
+
+  function makeDefaultFetch() {
+    return (url: string, opts?: { method?: string }) => {
+      const method = opts?.method ?? "GET";
+      const urlStr = String(url);
+      if (method === "GET" && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+      }
+      if (urlStr.includes("graph.microsoft.com/v1.0/applications") && method === "POST" && !urlStr.includes("federatedIdentity")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "app-object-id", appId: "client-id-mock" }) });
+      }
+      if (urlStr.includes("servicePrincipals") && method === "POST") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "sp-object-id-mock" }) });
+      }
+      if (urlStr.includes("federatedIdentityCredentials") && method === "POST") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }
+      if (urlStr.includes("roleAssignments") && method === "PUT") {
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({}) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCreateOrUpdateAndWait.mockResolvedValue(mockSwaDeploymentResult);
+    mockRGCreateOrUpdate.mockResolvedValue({});
+    mockFetch.mockImplementation(makeDefaultFetch());
+  });
+
+  it("returns status:provisioned (not not_implemented)", async () => {
+    const result = await configureCloud(swaParams) as Record<string, unknown>;
+    expect(result.status).toBe("provisioned");
+  });
+
+  it("returns swa_hostname from deployment outputs", async () => {
+    const result = await configureCloud(swaParams) as Record<string, unknown>;
+    expect(result.swa_hostname).toBe("gentle-wave-abc.azurestaticapps.net");
+  });
+
+  it("does NOT return deployment_token (fetched at runtime by reusable-swa-*.yml workflows)", async () => {
+    const result = await configureCloud(swaParams) as Record<string, unknown>;
+    expect(result).not.toHaveProperty("deployment_token");
+  });
+
+  it("returns swa_id from deployment outputs", async () => {
+    const result = await configureCloud(swaParams) as Record<string, unknown>;
+    expect(result.swa_id).toContain("staticSites");
+  });
+
+  it("creates resource group", async () => {
+    await configureCloud(swaParams);
+    expect(mockRGCreateOrUpdate).toHaveBeenCalledWith(
+      "my-app-rg",
+      expect.objectContaining({ location: "eastus2" })
+    );
+  });
+
+  it("deploys static-web-app.json template with deployment name ${project_name}-swa-deploy", async () => {
+    await configureCloud(swaParams);
+    expect(mockCreateOrUpdateAndWait).toHaveBeenCalledTimes(1);
+    expect(mockCreateOrUpdateAndWait).toHaveBeenCalledWith(
+      "my-app-rg",
+      "my-app-swa-deploy",
+      expect.objectContaining({
+        properties: expect.objectContaining({
+          template: expect.objectContaining({
+            "$schema": expect.stringContaining("deploymentTemplate.json"),
+          }),
+        }),
+      })
+    );
+  });
+
+  it("creates OIDC resources (app registrations, SPs, FICs) for all three environments", async () => {
+    await configureCloud(swaParams);
+    const calls = mockFetch.mock.calls as Array<[string, { method?: string }]>;
+    const appPosts = calls.filter(
+      ([url, opts]) =>
+        String(url).includes("graph.microsoft.com/v1.0/applications") &&
+        !String(url).includes("federatedIdentity") &&
+        opts?.method === "POST"
+    );
+    expect(appPosts).toHaveLength(3);
+  });
+
+  it("creates OIDC federated credentials for all three environments", async () => {
+    await configureCloud(swaParams);
+    const calls = mockFetch.mock.calls as Array<[string, { method?: string }]>;
+    const ficPosts = calls.filter(
+      ([url, opts]) => String(url).includes("federatedIdentityCredentials") && opts?.method === "POST"
+    );
+    expect(ficPosts).toHaveLength(3);
+  });
+
+  it("returns oidc_client_ids for preview, staging, and production", async () => {
+    const result = await configureCloud(swaParams) as Record<string, unknown>;
+    const ids = result.oidc_client_ids as Record<string, string>;
+    expect(ids.preview).toBe("client-id-mock");
+    expect(ids.staging).toBe("client-id-mock");
+    expect(ids.production).toBe("client-id-mock");
+  });
+
+  it("does NOT assign AcrPush role (no container registry in SWA path)", async () => {
+    await configureCloud(swaParams);
+    const calls = mockFetch.mock.calls as Array<[string, { method?: string; body?: string }]>;
+    const acrPushCalls = calls.filter(
+      ([url, opts]) =>
+        String(url).includes("roleAssignments") &&
+        opts?.method === "PUT" &&
+        // ACR_PUSH_ROLE_ID = "8311e382-0749-4cb8-b61a-304f252e45ec"
+        JSON.stringify(opts?.body).includes("8311e382-0749-4cb8-b61a-304f252e45ec")
+    );
+    expect(acrPushCalls).toHaveLength(0);
+  });
+
+  it("only assigns Contributor roles (3 — one per environment) on the resource group", async () => {
+    await configureCloud(swaParams);
+    const calls = mockFetch.mock.calls as Array<[string, { method?: string }]>;
+    const roleCalls = calls.filter(
+      ([url, opts]) => String(url).includes("roleAssignments") && opts?.method === "PUT"
+    );
+    expect(roleCalls).toHaveLength(3);
+  });
+
+  it("does NOT include acr_login_server or acr_id in the return value", async () => {
+    const result = await configureCloud(swaParams) as Record<string, unknown>;
+    expect(result).not.toHaveProperty("acr_login_server");
+    expect(result).not.toHaveProperty("acr_id");
+  });
+
+  it("does NOT include staging_fqdn or production_fqdn in the return value", async () => {
+    const result = await configureCloud(swaParams) as Record<string, unknown>;
+    expect(result).not.toHaveProperty("staging_fqdn");
+    expect(result).not.toHaveProperty("production_fqdn");
   });
 });
 

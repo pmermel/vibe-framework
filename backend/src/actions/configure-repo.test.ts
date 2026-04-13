@@ -41,6 +41,10 @@ function makeMockOctokit(overrides: Record<string, unknown> = {}) {
         data: { key: "fake-b64-key", key_id: "key123" },
       }),
       createOrUpdateEnvironmentSecret: vi.fn().mockResolvedValue({}),
+      getRepoPublicKey: vi.fn().mockResolvedValue({
+        data: { key: "fake-repo-b64-key", key_id: "repo-key123" },
+      }),
+      createOrUpdateRepoSecret: vi.fn().mockResolvedValue({}),
     },
     request: vi.fn().mockResolvedValue({}),
     ...overrides,
@@ -755,5 +759,39 @@ describe("configureRepo — VIBE_BACKEND_URL repo variable", () => {
         backend_url: "not-a-url",
       })
     ).rejects.toThrow("Invalid params:");
+  });
+});
+
+describe("configureRepo — no stored SWA deployment token", () => {
+  let mockOctokit: ReturnType<typeof makeMockOctokit>;
+
+  beforeEach(() => {
+    mockOctokit = makeMockOctokit();
+    (getGithubClient as ReturnType<typeof vi.fn>).mockReturnValue(mockOctokit);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("never calls createOrUpdateRepoSecret (SWA token is fetched at runtime, not stored)", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_id: "client-abc",
+      azure_tenant_id: "tenant-xyz",
+      azure_subscription_id: "sub-123",
+    });
+
+    expect(mockOctokit.actions.createOrUpdateRepoSecret).not.toHaveBeenCalled();
+  });
+
+  it("return value does not include swa_token_configured field", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+    })) as Record<string, unknown>;
+
+    expect(result).not.toHaveProperty("swa_token_configured");
   });
 });

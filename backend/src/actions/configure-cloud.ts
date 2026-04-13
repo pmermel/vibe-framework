@@ -83,6 +83,10 @@ function getTenantIdFromToken(token: string): string {
  * - Returns Azure outputs (clientIds, tenantId, ACR login server, FQDNs) for
  *   the caller to pass to `configure_repo` for GitHub secret storage
  *
+ * For the static-web-app adapter: does NOT return a deployment token. The SWA
+ * deployment token is fetched at runtime by `reusable-swa-*.yml` workflows via
+ * `az staticwebapp secrets list` after OIDC login — it is never stored as a secret.
+ *
  * Why Graph API (not Bicep) for OIDC resources:
  * The `microsoftGraph` Bicep extension used by `infrastructure/oidc-federated-credential.bicep`
  * was retired in Bicep 0.31. Azure AD app registrations, service principals, and
@@ -92,7 +96,6 @@ function getTenantIdFromToken(token: string): string {
  * What it does NOT do:
  * - Store GitHub environment secrets (caller passes outputs to configure_repo)
  * - Deploy the application (GitHub Actions owns that)
- * - Support static-web-app adapter (deferred — returns not_implemented)
  *
  * Azure auth: DefaultAzureCredential — managed identity when deployed to
  * Container Apps, az login credentials for local development.
@@ -109,15 +112,8 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
 
   const { project_name, github_repo, azure_subscription_id, azure_region, adapter } = parsed.data;
 
-  if (adapter === "static-web-app") {
-    return { status: "not_implemented", reason: "static-web-app adapter is deferred to Phase 4" };
-  }
-
   const [githubOrg, githubRepoName] = github_repo.split("/");
   const resourceGroupName = `${project_name}-rg`;
-  const registryName = `${project_name.replace(/-/g, "")}acr`;
-  const stagingAppName = `${project_name}-staging`;
-  const productionAppName = `${project_name}-prod`;
 
   const credential = new DefaultAzureCredential();
   const armClient = new ResourceManagementClient(credential, azure_subscription_id);
@@ -148,6 +144,176 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
   });
 
   const resourceGroupId = `/subscriptions/${azure_subscription_id}/resourceGroups/${resourceGroupName}`;
+
+  if (adapter === "static-web-app") {
+    // --- Static Web App path ---
+    // Deploy static-web-app.json ARM template (compiled from static-web-app.bicep).
+    const swaTemplate = JSON.parse(
+      readFileSync(join(INFRA_DIR, "static-web-app.json"), "utf-8")
+    ) as Record<string, unknown>;
+
+    const swaDeployment = await armClient.deployments.beginCreateOrUpdateAndWait(
+      resourceGroupName,
+      `${project_name}-swa-deploy`,
+      {
+        properties: {
+          mode: "Incremental",
+          template: swaTemplate,
+          parameters: {
+            appName: { value: project_name },
+            region: { value: azure_region },
+          },
+        },
+      }
+    );
+
+    const swaOutputs = (swaDeployment.properties?.outputs ?? {}) as Record<string, { value: string }>;
+    const swaHostname: string = swaOutputs.defaultHostname?.value ?? "";
+    const swaId: string = swaOutputs.swaId?.value ?? "";
+
+    // For each GitHub Actions environment: create an Azure AD app registration,
+    // service principal, and OIDC federated credential via the Microsoft Graph API,
+    // then assign Contributor on the resource group via ARM REST API.
+    // No ACR/AcrPush role assignment — SWA deployments use the deployment token.
+    const clientIds: Record<string, string> = {};
+
+    for (const env of GITHUB_ENVIRONMENTS) {
+      const appDisplayName = `${project_name}-github-${env}`;
+      const ficName = `${project_name}-${env}-fic`;
+
+      // --- App registration (idempotent: look up by uniqueName before creating) ---
+      const existingAppsRes = await fetch(
+        `${GRAPH_API}/v1.0/applications?$filter=uniqueName eq '${appDisplayName}'`,
+        { headers: graphHeaders }
+      );
+      if (!existingAppsRes.ok) {
+        const err = await existingAppsRes.text();
+        throw new Error(`Graph API: failed to look up app registration for ${env}: ${err}`);
+      }
+      const existingApps = await existingAppsRes.json() as { value: Array<Record<string, string>> };
+
+      let app: Record<string, string>;
+      if (existingApps.value.length > 0) {
+        app = existingApps.value[0];
+      } else {
+        const appRes = await fetch(`${GRAPH_API}/v1.0/applications`, {
+          method: "POST",
+          headers: graphHeaders,
+          body: JSON.stringify({ displayName: appDisplayName, uniqueName: appDisplayName }),
+        });
+        if (!appRes.ok) {
+          const err = await appRes.text();
+          throw new Error(`Graph API: failed to create app registration for ${env}: ${err}`);
+        }
+        app = await appRes.json() as Record<string, string>;
+      }
+
+      // --- Service principal (idempotent: look up by appId before creating) ---
+      const existingSPsRes = await fetch(
+        `${GRAPH_API}/v1.0/servicePrincipals?$filter=appId eq '${app.appId}'`,
+        { headers: graphHeaders }
+      );
+      if (!existingSPsRes.ok) {
+        const err = await existingSPsRes.text();
+        throw new Error(`Graph API: failed to look up service principal for ${env}: ${err}`);
+      }
+      const existingSPs = await existingSPsRes.json() as { value: Array<Record<string, string>> };
+
+      let sp: Record<string, string>;
+      if (existingSPs.value.length > 0) {
+        sp = existingSPs.value[0];
+      } else {
+        const spRes = await fetch(`${GRAPH_API}/v1.0/servicePrincipals`, {
+          method: "POST",
+          headers: graphHeaders,
+          body: JSON.stringify({ appId: app.appId }),
+        });
+        if (!spRes.ok) {
+          const err = await spRes.text();
+          throw new Error(`Graph API: failed to create service principal for ${env}: ${err}`);
+        }
+        sp = await spRes.json() as Record<string, string>;
+      }
+
+      // --- Federated credential (idempotent: look up by name before creating) ---
+      const existingFicsRes = await fetch(
+        `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials?$filter=name eq '${ficName}'`,
+        { headers: graphHeaders }
+      );
+      if (!existingFicsRes.ok) {
+        const err = await existingFicsRes.text();
+        throw new Error(`Graph API: failed to look up federated credential for ${env}: ${err}`);
+      }
+      const existingFics = await existingFicsRes.json() as { value: unknown[] };
+
+      if (existingFics.value.length === 0) {
+        const ficRes = await fetch(
+          `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials`,
+          {
+            method: "POST",
+            headers: graphHeaders,
+            body: JSON.stringify({
+              name: ficName,
+              issuer: "https://token.actions.githubusercontent.com",
+              subject: `repo:${githubOrg}/${githubRepoName}:environment:${env}`,
+              audiences: ["api://AzureADTokenExchange"],
+              description: `GitHub Actions OIDC trust for ${githubOrg}/${githubRepoName} ${env} environment`,
+            }),
+          }
+        );
+        if (!ficRes.ok) {
+          const err = await ficRes.text();
+          throw new Error(`Graph API: failed to create federated credential for ${env}: ${err}`);
+        }
+      }
+
+      // Assign Contributor role on the resource group (deterministic GUID = idempotent)
+      const contributorAssignmentName = deterministicGuid(resourceGroupId, sp.id, CONTRIBUTOR_ROLE_ID);
+      const contributorRes = await fetch(
+        `${ARM_API}${resourceGroupId}/providers/Microsoft.Authorization/roleAssignments/${contributorAssignmentName}?api-version=${ROLE_ASSIGNMENT_API_VERSION}`,
+        {
+          method: "PUT",
+          headers: armHeaders,
+          body: JSON.stringify({
+            properties: {
+              roleDefinitionId: `/subscriptions/${azure_subscription_id}/providers/Microsoft.Authorization/roleDefinitions/${CONTRIBUTOR_ROLE_ID}`,
+              principalId: sp.id,
+              principalType: "ServicePrincipal",
+            },
+          }),
+        }
+      );
+      // 409 Conflict = role assignment already exists — treat as success (idempotent)
+      if (!contributorRes.ok && contributorRes.status !== 409) {
+        const err = await contributorRes.text();
+        throw new Error(`ARM API: failed to assign Contributor for ${env}: ${err}`);
+      }
+
+      // No AcrPush assignment — SWA has no container registry.
+
+      clientIds[env] = app.appId;
+    }
+
+    return {
+      status: "provisioned",
+      project_name,
+      github_repo,
+      resource_group: resourceGroupName,
+      azure_region,
+      swa_hostname: swaHostname,
+      swa_id: swaId,
+      // deployment_token intentionally omitted — fetched at runtime by reusable-swa-*.yml
+      // workflows via `az staticwebapp secrets list` after OIDC login. No long-lived secret stored.
+      oidc_client_ids: clientIds,
+      tenant_id: tenantId,
+      subscription_id: azure_subscription_id,
+    };
+  }
+
+  // --- Container App path ---
+  const registryName = `${project_name.replace(/-/g, "")}acr`;
+  const stagingAppName = `${project_name}-staging`;
+  const productionAppName = `${project_name}-prod`;
 
   // 2. Deploy container-apps-env ARM template (compiled from Bicep at build time).
   //    Using pre-compiled JSON avoids requiring the Bicep CLI at runtime.

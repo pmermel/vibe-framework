@@ -72,6 +72,10 @@ async function encryptSecret(publicKey: string, secretValue: string): Promise<st
  *   environment receives its own per-environment client ID. Falls back to the single
  *   `azure_client_id` value for backward compatibility when the map is absent.
  *
+ * Does NOT store an `AZURE_STATIC_WEB_APPS_API_TOKEN` secret. For the static-web-app
+ * adapter, the SWA deployment token is fetched at runtime by the `reusable-swa-*.yml`
+ * framework workflows via `az staticwebapp secrets list` after OIDC login.
+ *
  * Does NOT create or modify source code in the repository.
  * Does NOT provision Azure resources — use `configure_cloud` for that.
  * Does NOT create, merge, or close pull requests.

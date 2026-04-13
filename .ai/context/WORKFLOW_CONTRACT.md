@@ -417,6 +417,214 @@ Bootstrap automation (via `create_project` or `import_project`) generates the fo
 4. **The `on:` trigger branch names come from `vibe.yaml branch_policy`**, not from framework defaults.
 5. **`secrets: inherit` is always used.** Individual secret values are never hardcoded into wrappers.
 
+---
+
+## `reusable-swa-preview.yml`
+
+**File:** `.github/workflows/reusable-swa-preview.yml`
+**Ref pattern:** `<framework-owner>/vibe-framework/.github/workflows/reusable-swa-preview.yml@<tag>`
+**Trigger:** `pull_request` events — `opened`, `synchronize`, `reopened`, `closed`
+**GitHub Environment:** `preview` (OIDC trust scoping — no approval gate)
+**Concurrency:** One active deploy per PR (`cancel-in-progress: true`); controlled by the reusable workflow, not the caller
+
+### Inputs
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `app_name` | string | yes | — | Project name |
+| `resource_group` | string | yes | — | Azure resource group containing the Static Web App |
+| `swa_name` | string | yes | — | Azure Static Web App resource name (e.g. `my-app-swa`) |
+| `install_command` | string | no | `npm install` | Dependency install command |
+| `build_command` | string | no | `npm run build` | Application build command |
+| `output_location` | string | no | `dist` | Build output directory relative to repo root |
+| `backend_url` | string | no | `""` | Vibe backend URL for PR enrichment (enrichment skipped gracefully when empty) |
+
+### Required Secrets
+
+All three secrets must be set on the `preview` GitHub environment. Callers pass them via `secrets: inherit`.
+
+| Secret | Description |
+|---|---|
+| `AZURE_CLIENT_ID` | Client ID of the service principal for the `preview` environment |
+| `AZURE_TENANT_ID` | Azure AD tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
+
+No `AZURE_STATIC_WEB_APPS_API_TOKEN` secret is needed. The deployment token is fetched at runtime via `az staticwebapp secrets list` after OIDC login.
+
+### Outputs
+
+| Name | Description |
+|---|---|
+| `preview_url` | HTTPS URL of the deployed SWA preview environment (from the SWA deploy action's `static-web-app-url` output) |
+
+### Permissions Declared (inside reusable workflow)
+
+| Permission | Reason |
+|---|---|
+| `id-token: write` | OIDC token exchange with Azure |
+| `contents: read` | Checkout |
+| `pull-requests: write` | Post/update preview URL comment on the PR |
+
+### Behavior
+
+**deploy job** (runs when `github.event.action != 'closed'`):
+- Checks out, installs, and builds the app.
+- Logs in to Azure via OIDC (`azure/login@v2`).
+- Fetches the SWA deployment token at runtime: `az staticwebapp secrets list --name <swa_name> --resource-group <resource_group>`.
+- Deploys to a PR-specific preview environment via `Azure/static-web-apps-deploy@v1` (`action: upload`).
+- Captures the preview URL from the deploy action's `static-web-app-url` output.
+- Posts/updates a `<!-- vibe-preview-url -->` comment on the PR with the preview URL (subsequent pushes update the same comment rather than creating duplicates).
+
+**post-enrichment job** (runs after a successful deploy, `continue-on-error: true`):
+- Calls the vibe backend `capture_preview` action to capture a screenshot of the deployed preview.
+- Calls `post_status` with the screenshot URL and preview URL to post a structured status comment to the PR.
+- Skipped gracefully when `backend_url` is empty or unset — enrichment failures never block PR merge.
+- Mirrors the container-app enrichment loop in `reusable-preview.yml` exactly.
+
+**close job** (runs when `github.event.action == 'closed'`):
+- Logs in to Azure via OIDC, fetches the SWA deployment token, then calls `Azure/static-web-apps-deploy@v1` with `action: close` to tear down the PR's preview environment.
+- This is the primary cleanup path — no TTL cleanup workflow is needed for SWA.
+
+### Thin Wrapper (generated project pattern)
+
+```yaml
+# .github/workflows/preview.yml
+name: Preview
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+    branches: ['**']
+
+jobs:
+  preview:
+    uses: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-swa-preview.yml@v1
+    with:
+      app_name: my-site
+      resource_group: my-site-rg
+      swa_name: my-site-swa
+      install_command: npm install
+      build_command: npm run build
+      backend_url: ${{ vars.VIBE_BACKEND_URL }}
+    secrets: inherit
+```
+
+`VIBE_BACKEND_URL` is a GitHub Actions repo variable (not a secret) set by `configureRepo` during project bootstrap. Enrichment is skipped gracefully when the variable is not set.
+
+---
+
+## `reusable-swa-staging.yml`
+
+**File:** `.github/workflows/reusable-swa-staging.yml`
+**Ref pattern:** `<framework-owner>/vibe-framework/.github/workflows/reusable-swa-staging.yml@<tag>`
+**Trigger:** Push to the staging branch (default: `develop`, from `vibe.yaml branch_policy.staging`)
+**GitHub Environment:** `staging` (OIDC trust scoping — no approval gate)
+
+### Inputs
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `app_name` | string | yes | — | Project name |
+| `resource_group` | string | yes | — | Azure resource group containing the Static Web App |
+| `swa_name` | string | yes | — | Azure Static Web App resource name |
+| `install_command` | string | no | `npm install` | Dependency install command |
+| `build_command` | string | no | `npm run build` | Application build command |
+| `output_location` | string | no | `dist` | Build output directory |
+
+### Required Secrets
+
+| Secret | Description |
+|---|---|
+| `AZURE_CLIENT_ID` | Client ID of the service principal for the `staging` environment |
+| `AZURE_TENANT_ID` | Azure AD tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
+
+### Behavior
+
+- Checks out, installs, builds.
+- Logs in to Azure via OIDC.
+- Fetches SWA deployment token at runtime.
+- Deploys to the `staging` named environment via `Azure/static-web-apps-deploy@v1` (`action: upload`, `deployment_environment: staging`).
+
+### Thin Wrapper (generated project pattern)
+
+```yaml
+# .github/workflows/staging.yml
+name: Staging
+on:
+  push:
+    branches: [develop]
+
+jobs:
+  staging:
+    uses: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-swa-staging.yml@v1
+    with:
+      app_name: my-site
+      resource_group: my-site-rg
+      swa_name: my-site-swa
+      install_command: npm install
+      build_command: npm run build
+    secrets: inherit
+```
+
+---
+
+## `reusable-swa-production.yml`
+
+**File:** `.github/workflows/reusable-swa-production.yml`
+**Ref pattern:** `<framework-owner>/vibe-framework/.github/workflows/reusable-swa-production.yml@<tag>`
+**Trigger:** Push to the production branch (default: `main`, from `vibe.yaml branch_policy.production`)
+**GitHub Environment:** `production` (approval gate — pauses the job until a required reviewer approves)
+
+### Inputs
+
+| Name | Type | Required | Default | Description |
+|---|---|---|---|---|
+| `app_name` | string | yes | — | Project name |
+| `resource_group` | string | yes | — | Azure resource group containing the Static Web App |
+| `swa_name` | string | yes | — | Azure Static Web App resource name |
+| `install_command` | string | no | `npm install` | Dependency install command |
+| `build_command` | string | no | `npm run build` | Application build command |
+| `output_location` | string | no | `dist` | Build output directory |
+
+### Required Secrets
+
+| Secret | Description |
+|---|---|
+| `AZURE_CLIENT_ID` | Client ID of the service principal for the `production` environment |
+| `AZURE_TENANT_ID` | Azure AD tenant ID |
+| `AZURE_SUBSCRIPTION_ID` | Azure subscription ID |
+
+### Behavior
+
+- The `production` job declares `environment: production`. GitHub enforces the approval gate before any steps run.
+- Checks out, installs, builds.
+- Logs in to Azure via OIDC.
+- Fetches SWA deployment token at runtime.
+- Deploys to the SWA production slot via `Azure/static-web-apps-deploy@v1` (`action: upload`, no `deployment_environment` — production deploys to the default slot).
+
+### Thin Wrapper (generated project pattern)
+
+```yaml
+# .github/workflows/production.yml
+name: Production
+on:
+  push:
+    branches: [main]
+
+jobs:
+  production:
+    uses: YOUR_GITHUB_USERNAME/vibe-framework/.github/workflows/reusable-swa-production.yml@v1
+    with:
+      app_name: my-site
+      resource_group: my-site-rg
+      swa_name: my-site-swa
+      install_command: npm install
+      build_command: npm run build
+    secrets: inherit
+```
+
+---
+
 ## Workflow Upgrade Path
 
 To upgrade a generated project to a newer framework workflow release:
