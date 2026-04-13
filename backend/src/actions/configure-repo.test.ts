@@ -41,6 +41,10 @@ function makeMockOctokit(overrides: Record<string, unknown> = {}) {
         data: { key: "fake-b64-key", key_id: "key123" },
       }),
       createOrUpdateEnvironmentSecret: vi.fn().mockResolvedValue({}),
+      getRepoPublicKey: vi.fn().mockResolvedValue({
+        data: { key: "fake-repo-b64-key", key_id: "repo-key123" },
+      }),
+      createOrUpdateRepoSecret: vi.fn().mockResolvedValue({}),
     },
     request: vi.fn().mockResolvedValue({}),
     ...overrides,
@@ -755,5 +759,63 @@ describe("configureRepo — VIBE_BACKEND_URL repo variable", () => {
         backend_url: "not-a-url",
       })
     ).rejects.toThrow("Invalid params:");
+  });
+});
+
+describe("configureRepo — swa_deployment_token repo secret", () => {
+  let mockOctokit: ReturnType<typeof makeMockOctokit>;
+
+  beforeEach(() => {
+    mockOctokit = makeMockOctokit();
+    (getGithubClient as ReturnType<typeof vi.fn>).mockReturnValue(mockOctokit);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls getRepoPublicKey and createOrUpdateRepoSecret with AZURE_STATIC_WEB_APPS_API_TOKEN when swa_deployment_token is provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      swa_deployment_token: "swa-token-abc123",
+    })) as { swa_token_configured: boolean };
+
+    expect(result.swa_token_configured).toBe(true);
+    expect(mockOctokit.actions.getRepoPublicKey).toHaveBeenCalledWith({
+      owner: "owner",
+      repo: "my-app",
+    });
+    expect(mockOctokit.actions.createOrUpdateRepoSecret).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: "owner",
+        repo: "my-app",
+        secret_name: "AZURE_STATIC_WEB_APPS_API_TOKEN",
+        key_id: "repo-key123",
+      })
+    );
+  });
+
+  it("returns swa_token_configured: false when swa_deployment_token is absent", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+    })) as { swa_token_configured: boolean };
+
+    expect(result.swa_token_configured).toBe(false);
+    expect(mockOctokit.actions.getRepoPublicKey).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createOrUpdateRepoSecret).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call createOrUpdateRepoSecret when swa_deployment_token is absent", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_id: "client-abc",
+      azure_tenant_id: "tenant-xyz",
+      azure_subscription_id: "sub-123",
+    });
+
+    expect(mockOctokit.actions.createOrUpdateRepoSecret).not.toHaveBeenCalled();
   });
 });

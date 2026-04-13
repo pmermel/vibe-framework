@@ -18,6 +18,7 @@ const ConfigureRepoParams = z.object({
   azure_tenant_id: z.string().optional(),
   azure_subscription_id: z.string().optional(),
   backend_url: z.string().url().optional(),
+  swa_deployment_token: z.string().optional(),
 });
 
 /** Standard labels to create on the target repository. */
@@ -96,7 +97,11 @@ async function encryptSecret(publicKey: string, secretValue: string): Promise<st
  *     `create_project` passes `process.env.BACKEND_URL` (set on the Container App by
  *     `setup-azure.sh`). When absent, no variable is created and enrichment is silently
  *     skipped by the workflow's `if [ -z "$BACKEND_URL" ]` guard.
- * @returns `{ configured: true, repo, branch_protections, environments, labels_created, azure_secrets_configured, backend_url_configured }`
+ *   - `swa_deployment_token` (string, optional) — when provided, stores the Azure Static
+ *     Web Apps deployment token as the `AZURE_STATIC_WEB_APPS_API_TOKEN` repo-level secret.
+ *     Required for projects using `adapter: static-web-app`. Passed by `create_project` from
+ *     `configure_cloud` outputs when the SWA path is active. When absent, no secret is created.
+ * @returns `{ configured: true, repo, branch_protections, environments, labels_created, azure_secrets_configured, backend_url_configured, swa_token_configured }`
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  * @throws GitHub API errors if branch protection or environment operations fail.
  * @throws GitHub API errors if any approver username cannot be resolved — fails closed
@@ -248,6 +253,23 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     }
   }
 
+  // --- SWA deployment token (repo-level secret) ---
+  // When provided, store AZURE_STATIC_WEB_APPS_API_TOKEN as a repository secret
+  // so the generated SWA workflow wrappers can authenticate to Azure Static Web Apps.
+  let swaTokenConfigured = false;
+  if (config.swa_deployment_token) {
+    const { data: repoPubKey } = await octokit.actions.getRepoPublicKey({ owner, repo });
+    const encryptedToken = await encryptSecret(repoPubKey.key, config.swa_deployment_token);
+    await octokit.actions.createOrUpdateRepoSecret({
+      owner,
+      repo,
+      secret_name: "AZURE_STATIC_WEB_APPS_API_TOKEN",
+      encrypted_value: encryptedToken,
+      key_id: repoPubKey.key_id,
+    });
+    swaTokenConfigured = true;
+  }
+
   // --- Issue labels ---
   let labelsCreated = 0;
   for (const label of STANDARD_LABELS) {
@@ -278,5 +300,6 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     labels_created: labelsCreated,
     azure_secrets_configured: azureSecretsConfigured,
     backend_url_configured: backendUrlConfigured,
+    swa_token_configured: swaTokenConfigured,
   };
 }
