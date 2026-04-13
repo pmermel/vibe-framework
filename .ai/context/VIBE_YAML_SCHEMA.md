@@ -77,6 +77,8 @@ deploy:
 ### `azure`
 Azure resource configuration.
 
+**Container-app adapter fields:**
+
 | Field | Type | Description |
 |---|---|---|
 | `region` | string | Azure region. Default: `eastus2` |
@@ -86,6 +88,16 @@ Azure resource configuration.
 | `preview_app_prefix` | string | Prefix for ephemeral preview Container Apps |
 | `staging_app` | string | Staging Container App name |
 | `production_app` | string | Production Container App name |
+
+**Static-web-app adapter fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `region` | string | Azure region. Default: `eastus2` |
+| `resource_group` | string | Resource group name |
+| `static_web_app` | string | Azure Static Web App resource name (e.g. `my-app-swa`). Used by reusable SWA workflows to fetch the deployment token at runtime via `az staticwebapp secrets list`. |
+
+Note: `registry`, `container_app_environment`, `preview_app_prefix`, `staging_app`, and `production_app` are container-app-only fields and must not appear in static-web-app projects.
 
 ### `github`
 GitHub repository and workflow configuration.
@@ -99,6 +111,8 @@ GitHub repository and workflow configuration.
 #### `workflow_refs`
 This is the canonical source of truth for reusable workflow version pinning. Bootstrap and upgrade automation generates thin wrapper workflow files from these values.
 
+**Container-app adapter:**
+
 ```yaml
 github:
   workflow_refs:
@@ -107,6 +121,18 @@ github:
     production: pmermel/vibe-framework/.github/workflows/reusable-production.yml@v1
     preview_ttl_cleanup: pmermel/vibe-framework/.github/workflows/reusable-preview-ttl-cleanup.yml@v1
 ```
+
+**Static-web-app adapter:**
+
+```yaml
+github:
+  workflow_refs:
+    preview: pmermel/vibe-framework/.github/workflows/reusable-swa-preview.yml@v1
+    staging: pmermel/vibe-framework/.github/workflows/reusable-swa-staging.yml@v1
+    production: pmermel/vibe-framework/.github/workflows/reusable-swa-production.yml@v1
+```
+
+Note: `preview_ttl_cleanup` is omitted from `workflow_refs` for static-web-app projects. Azure Static Web Apps handles preview environment cleanup natively via the `close` action in `reusable-swa-preview.yml` when a PR is closed — no scheduled TTL cleanup workflow is needed.
 
 - References must be pinned to a release tag or commit SHA — never `@main`.
 - Updating these refs and re-running bootstrap generates updated wrapper workflows.
