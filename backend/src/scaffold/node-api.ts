@@ -325,6 +325,8 @@ jobs:
       registry: ${p.registryName}
       target_port: 8080
       backend_url: \${{ vars.VIBE_BACKEND_URL }}
+      install_command: npm install
+      build_command: npm run build
     secrets: inherit
 `;
 }
@@ -343,6 +345,8 @@ jobs:
       resource_group: ${p.name}-rg
       staging_app: ${p.name}-staging
       registry: ${p.registryName}
+      install_command: npm install
+      build_command: npm run build
     secrets: inherit
 `;
 }
@@ -361,6 +365,8 @@ jobs:
       resource_group: ${p.name}-rg
       production_app: ${p.name}-prod
       registry: ${p.registryName}
+      install_command: npm install
+      build_command: npm run build
     secrets: inherit
 `;
 }

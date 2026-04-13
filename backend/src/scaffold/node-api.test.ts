@@ -111,4 +111,13 @@ describe("generateNodeApiScaffold — app files", () => {
     expect(previewWorkflow).toContain("target_port: 8080");
     expect(previewWorkflow).toContain("vars.VIBE_BACKEND_URL");
   });
+
+  it("passes install_command: npm install to all three CI wrapper workflows", () => {
+    const files = scaffold();
+    for (const wf of ["preview", "staging", "production"]) {
+      const content = files[`.github/workflows/${wf}.yml`];
+      expect(content).toContain("install_command: npm install");
+      expect(content).not.toContain("npm ci");
+    }
+  });
 });
