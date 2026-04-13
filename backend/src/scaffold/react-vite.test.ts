@@ -183,6 +183,12 @@ describe("generateReactViteScaffold — preview wrapper workflow", () => {
     expect(workflow).toContain("pull_request");
     expect(workflow).toContain("closed");
   });
+
+  it("passes backend_url: ${{ vars.VIBE_BACKEND_URL }} for enrichment", () => {
+    const workflow = scaffold()[".github/workflows/preview.yml"];
+    expect(workflow).toContain("backend_url:");
+    expect(workflow).toContain("VIBE_BACKEND_URL");
+  });
 });
 
 describe("generateReactViteScaffold — staging wrapper workflow", () => {

@@ -320,6 +320,7 @@ jobs:
       swa_name: ${p.name}-swa
       install_command: npm install
       build_command: npm run build
+      backend_url: \${{ vars.VIBE_BACKEND_URL }}
     secrets: inherit
 `;
 }
