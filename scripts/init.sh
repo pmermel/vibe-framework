@@ -192,7 +192,7 @@ fi
 
 echo "→ Validating Codespaces configuration"
 CODESPACES_OK=true
-bash "$SCRIPT_DIR/validate-codespaces.sh" || {
+bash "$SCRIPT_DIR/validate-codespaces.sh" "$GITHUB_ORG_OR_USER/$FRAMEWORK_REPO" || {
   echo "⚠ Codespaces validation incomplete — see output above"
   CODESPACES_OK=false
 }
