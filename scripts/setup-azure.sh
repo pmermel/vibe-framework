@@ -61,11 +61,16 @@ export BACKEND_APP_NAME="$BACKEND_APP_NAME"
 export REGISTRY_NAME="$REGISTRY_NAME"
 EOF
 
+echo "→ Staging infrastructure files into backend/ for Docker build context"
+# The Dockerfile build context is backend/. Infrastructure ARM templates live at
+# the repo root and cannot be referenced via ../infrastructure/ inside Docker.
+# We pre-stage them so the Dockerfile can COPY infrastructure/ explicitly.
+mkdir -p "$REPO_ROOT/backend/infrastructure"
+cp "$REPO_ROOT/infrastructure/container-apps-env.json" "$REPO_ROOT/backend/infrastructure/"
+
 echo "→ Building and pushing backend image to ACR ($REGISTRY_NAME)"
 # az acr build runs entirely in Azure — no local Docker daemon required.
-# Context is backend/ — the Dockerfile only references files within that directory.
-# Using the repo root as context produces a 700MB+ upload and fails because
-# tsconfig.json and src/ are resolved relative to the build context, not the Dockerfile.
+# Context is backend/ — Dockerfile references only files within that directory.
 az acr build \
   --registry "$REGISTRY_NAME" \
   --image "vibe-backend:latest" \
