@@ -6,10 +6,12 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 # infrastructure/ is pre-staged by setup-azure.sh before az acr build.
-# The postbuild script copies it to dist/infrastructure/ when running locally
-# (where ../infrastructure/ exists), but falls back to this explicit copy in Docker.
 COPY infrastructure/ ./infrastructure/
 RUN npm run build
+# postbuild uses ../infrastructure/ (local dev path) which is absent in Docker context,
+# so it skips silently. Explicitly copy the staged file into dist/infrastructure/ here
+# so the runtime stage's `COPY --from=builder /app/dist ./dist` includes it.
+RUN cp infrastructure/container-apps-env.json dist/infrastructure/
 
 # Install Playwright system dependencies and chromium
 RUN npx playwright install-deps chromium
