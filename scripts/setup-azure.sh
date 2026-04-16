@@ -76,14 +76,42 @@ STORAGE_ACCOUNT_NAME=$(az deployment group show \
   --name "framework-env-deploy" \
   --query "properties.outputs.storageAccountName.value" -o tsv)
 
-echo "→ Updating Container App to use real image"
-az containerapp update \
-  --name "$BACKEND_APP_NAME" \
-  --resource-group "$RESOURCE_GROUP" \
-  --image "$REGISTRY_NAME.azurecr.io/vibe-backend:latest" \
-  --registry-server "$REGISTRY_NAME.azurecr.io" \
-  --registry-identity system \
-  --output none
+echo "→ Updating Container App to use real image (with RBAC propagation retry)"
+# AcrPull role assignment was created during Bicep deployment but Azure RBAC
+# propagation can take several minutes. We retry the containerapp update with
+# exponential backoff so bootstrap remains reliable rather than timing-dependent.
+ACR_UPDATE_OK=false
+for attempt in 1 2 3 4 5; do
+  echo "   Attempt $attempt/5: updating Container App image and registry config"
+  if az containerapp update \
+    --name "$BACKEND_APP_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --image "$REGISTRY_NAME.azurecr.io/vibe-backend:latest" \
+    --registry-server "$REGISTRY_NAME.azurecr.io" \
+    --registry-identity system \
+    --output none 2>&1; then
+    ACR_UPDATE_OK=true
+    break
+  fi
+  if [[ $attempt -lt 5 ]]; then
+    WAIT=$(( attempt * 30 ))
+    echo "   Update failed — waiting ${WAIT}s for RBAC propagation before retry"
+    sleep "$WAIT"
+  fi
+done
+
+if [[ "$ACR_UPDATE_OK" != "true" ]]; then
+  echo ""
+  echo "ERROR: Container App image update failed after 5 attempts."
+  echo "       AcrPull role may not have propagated. Wait a few minutes and re-run:"
+  echo "         az containerapp update \\"
+  echo "           --name $BACKEND_APP_NAME \\"
+  echo "           --resource-group $RESOURCE_GROUP \\"
+  echo "           --image $REGISTRY_NAME.azurecr.io/vibe-backend:latest \\"
+  echo "           --registry-server $REGISTRY_NAME.azurecr.io \\"
+  echo "           --registry-identity system"
+  exit 1
+fi
 
 echo "→ Wiring storage account name and backend URL to Container App env vars"
 az containerapp update \
