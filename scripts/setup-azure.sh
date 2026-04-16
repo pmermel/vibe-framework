@@ -63,12 +63,14 @@ EOF
 
 echo "→ Building and pushing backend image to ACR ($REGISTRY_NAME)"
 # az acr build runs entirely in Azure — no local Docker daemon required.
-# Context is the repo root so the Dockerfile can reference backend/ and infrastructure/.
+# Context is backend/ — the Dockerfile only references files within that directory.
+# Using the repo root as context produces a 700MB+ upload and fails because
+# tsconfig.json and src/ are resolved relative to the build context, not the Dockerfile.
 az acr build \
   --registry "$REGISTRY_NAME" \
   --image "vibe-backend:latest" \
   --file "$REPO_ROOT/backend/Dockerfile" \
-  "$REPO_ROOT"
+  "$REPO_ROOT/backend"
 
 echo "→ Capturing storage account name from deployment outputs"
 STORAGE_ACCOUNT_NAME=$(az deployment group show \
