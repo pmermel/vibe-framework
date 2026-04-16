@@ -75,12 +75,11 @@ resource backendApp 'Microsoft.App/containerApps@2023-05-01' = {
         targetPort: 8080
         transport: 'auto'
       }
-      registries: [
-        {
-          server: acr.properties.loginServer
-          identity: 'system'
-        }
-      ]
+      // registries block intentionally omitted from initial deployment.
+      // The placeholder image is public (MCR) and needs no ACR auth.
+      // setup-azure.sh adds the registry config via `az containerapp update`
+      // after the AcrPull role assignment has propagated, avoiding the
+      // "Operation expired" failure caused by RBAC propagation delay.
     }
     template: {
       containers: [
