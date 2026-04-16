@@ -2,3 +2,6 @@
 # The canonical source is /infrastructure/container-apps-env.json at the repo root.
 # Production: dist/infrastructure/ is populated by postbuild and included in the Docker image.
 src/infrastructure/
+
+# Pre-staged by setup-azure.sh for Docker build context — not part of the repo.
+infrastructure/

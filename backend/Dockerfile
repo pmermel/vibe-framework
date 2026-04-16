@@ -5,6 +5,10 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
+# infrastructure/ is pre-staged by setup-azure.sh before az acr build.
+# The postbuild script copies it to dist/infrastructure/ when running locally
+# (where ../infrastructure/ exists), but falls back to this explicit copy in Docker.
+COPY infrastructure/ ./infrastructure/
 RUN npm run build
 
 # Install Playwright system dependencies and chromium
