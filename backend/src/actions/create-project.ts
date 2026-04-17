@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Octokit } from "@octokit/rest";
 import { getGithubClient } from "../lib/github-client.js";
 import { generateNextjsScaffold } from "../scaffold/nextjs.js";
 import { generateNodeApiScaffold } from "../scaffold/node-api.js";
@@ -293,15 +294,78 @@ export async function createProject(params: Record<string, unknown>): Promise<un
 
   const prNumber = prResponse.data.number;
 
-  // --- Azure provisioning and GitHub repo configuration ---
-  // Always performed — subscriptionId was resolved and validated above.
-  // Runs after the PR is open so any failure is still visible and recoverable via GitHub.
-  let cloudOutputs: Record<string, unknown> | undefined;
-  let cloudProvisioned = false;
-  let repoConfigured = false;
+  // --- Azure provisioning and GitHub repo configuration (background) ---
+  // Kicked off asynchronously after returning to the caller. The bootstrap PR
+  // is the status surface — progress and errors are posted as PR comments.
+  // This ensures create_project returns in <10s regardless of how long Azure
+  // provisioning takes (typically 3–5 minutes for a full Container Apps deployment).
+  setImmediate(() => {
+    provisionInBackground({
+      config,
+      subscriptionId,
+      octokit,
+      prNumber,
+      repoUrl: repoUrl,
+      prUrl: prResponse.data.html_url,
+    });
+  });
+
+  return {
+    repo_url: repoUrl,
+    pr_url: prResponse.data.html_url,
+    pr_number: prNumber,
+    status: "provisioning",
+    message:
+      "Repository created and bootstrap PR opened. Azure provisioning is running in the background. " +
+      "Progress and results will be posted as comments on the bootstrap PR.",
+  };
+}
+
+/**
+ * provisionInBackground
+ *
+ * Runs configureCloud + configureRepo after the HTTP response has been returned.
+ * Posts progress and error comments to the bootstrap PR. Never throws — all errors
+ * are surfaced as PR comments so the operator can recover from GitHub.
+ */
+async function provisionInBackground({
+  config,
+  subscriptionId,
+  octokit,
+  prNumber,
+  repoUrl: _repoUrl,
+  prUrl: _prUrl,
+}: {
+  config: {
+    name: string;
+    template: "nextjs" | "react-vite" | "node-api";
+    adapter: "container-app" | "static-web-app";
+    github_owner: string;
+    azure_region: string;
+    approvers: string[];
+    framework_repo: string;
+  };
+  subscriptionId: string;
+  octokit: Octokit;
+  prNumber: number;
+  repoUrl: string;
+  prUrl: string;
+}): Promise<void> {
+  const postComment = async (body: string) => {
+    await octokit.issues.createComment({
+      owner: config.github_owner,
+      repo: config.name,
+      issue_number: prNumber,
+      body,
+    }).catch((err: unknown) => {
+      console.error("[create_project] Failed to post PR comment:", err);
+    });
+  };
 
   try {
-    cloudOutputs = (await configureCloud({
+    await postComment("⏳ **Azure provisioning started** — this takes 3–5 minutes. Progress will be posted here.");
+
+    const cloudOutputs = (await configureCloud({
       project_name: config.name,
       github_repo: `${config.github_owner}/${config.name}`,
       azure_subscription_id: subscriptionId,
@@ -309,10 +373,7 @@ export async function createProject(params: Record<string, unknown>): Promise<un
       adapter: config.adapter,
     })) as Record<string, unknown>;
 
-    // Only proceed with configureRepo if cloud provisioning succeeded (not "not_implemented")
     if (cloudOutputs.status !== "not_implemented") {
-      cloudProvisioned = true;
-
       const oidcClientIds = cloudOutputs.oidc_client_ids as { preview: string; staging: string; production: string };
 
       await configureRepo({
@@ -321,56 +382,33 @@ export async function createProject(params: Record<string, unknown>): Promise<un
         azure_client_ids: oidcClientIds,
         azure_tenant_id: cloudOutputs.tenant_id as string,
         azure_subscription_id: cloudOutputs.subscription_id as string,
-        // Wire the backend URL into the generated project's repo variable so the
-        // post-enrichment workflow job can reach the backend for screenshot posting.
-        // process.env.BACKEND_URL is set on the Container App by setup-azure.sh.
         backend_url: process.env.BACKEND_URL,
-        // No swa_deployment_token — the SWA deployment token is fetched at runtime
-        // by reusable-swa-*.yml workflows via `az staticwebapp secrets list` after
-        // OIDC login. It is never stored as a repo or environment secret.
       });
 
-      repoConfigured = true;
-
-      // Update PR body with real Azure outputs now that provisioning succeeded.
+      // Update PR body with real Azure outputs.
       await octokit.pulls.update({
         owner: config.github_owner,
         repo: config.name,
         pull_number: prNumber,
         body: bootstrapPrBody(config.name, config.template, config.azure_region, cloudOutputs),
       });
+
+      await postComment("✅ **Azure provisioning complete** — OIDC trust configured, GitHub environments set up. Merge this PR to trigger the first staging deployment.");
     }
   } catch (err: unknown) {
-    // Provisioning failed — post an error comment to the PR so the failure is
-    // visible and recoverable in GitHub. Re-throw so the caller knows it failed.
-    await octokit.issues.createComment({
-      owner: config.github_owner,
-      repo: config.name,
-      issue_number: prNumber,
-      body: [
-        "❌ **Azure provisioning failed**",
-        "",
-        "The repository and bootstrap branch were created successfully, but Azure provisioning failed with:",
-        "",
-        "```",
-        String(err),
-        "```",
-        "",
-        "To retry, call `configure_cloud` and `configure_repo` with this repo as the target, then update the PR description with the outputs.",
-      ].join("\n"),
-    }).catch(() => {
-      // Best-effort — don't mask the original error if the comment itself fails.
-    });
-    throw err;
+    await postComment([
+      "❌ **Azure provisioning failed**",
+      "",
+      "The repository and bootstrap branch were created successfully, but Azure provisioning failed with:",
+      "",
+      "```",
+      String(err),
+      "```",
+      "",
+      "To retry, call `configure_cloud` and `configure_repo` with this repo as the target, then update the PR description with the outputs.",
+    ].join("\n"));
+    console.error("[create_project] Background provisioning failed:", err);
   }
-
-  return {
-    repo_url: repoUrl,
-    pr_url: prResponse.data.html_url,
-    pr_number: prNumber,
-    cloud_provisioned: cloudProvisioned,
-    repo_configured: repoConfigured,
-  };
 }
 
 function bootstrapPrBody(
