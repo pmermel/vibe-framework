@@ -62,11 +62,14 @@ const CreateProjectParams = z.object({
  *   - `azure_subscription_id` (string, optional) — falls back to `AZURE_SUBSCRIPTION_ID` env var
  *   - `approvers` (string[], required, min 1)
  *   - `framework_repo` (string, optional, default `"pmermel/vibe-framework"`)
- * @returns `{ repo_url, pr_url, pr_number, cloud_provisioned, repo_configured }` on success.
+ * @returns `{ repo_url, pr_url, pr_number, status: "provisioning", message }` immediately
+ *   after the bootstrap PR is opened. Azure provisioning runs in the background via
+ *   `setImmediate`; success and failure are surfaced as PR comments, not in the return value.
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  * @throws `"azure_subscription_id is required..."` if subscription cannot be resolved.
- * @throws GitHub API errors if repo creation or Git operations fail.
- * @throws Azure or Graph API errors if cloud provisioning fails (after posting PR comment).
+ * @throws GitHub API errors if repo creation or Git operations fail (synchronous — before return).
+ * @throws Never for Azure/Graph provisioning errors — these are caught in `provisionInBackground`,
+ *   posted as a PR comment with retry instructions, and logged; they do NOT propagate to the caller.
  */
 export async function createProject(params: Record<string, unknown>): Promise<unknown> {
   const parsed = CreateProjectParams.safeParse(params);

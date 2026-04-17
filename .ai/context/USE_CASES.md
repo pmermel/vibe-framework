@@ -56,10 +56,10 @@ The concrete pass/fail checklist for proving these journeys as part of Phase 4 l
 2. The backend creates a new GitHub repository through the GitHub App.
 3. The backend scaffolds the selected template and writes the required framework files.
 4. The backend enables Codespaces for the new repository (best-effort; non-fatal if plan/org restrictions apply).
-5. The backend opens an initial bootstrap PR as soon as the scaffold branch is pushed — before any Azure provisioning — so failures leave a recoverable, reviewable GitHub surface.
-6. The backend provisions a dedicated Azure Container Apps environment for that project via `configure_cloud`.
-7. The backend creates the project repo's GitHub environments, per-environment OIDC secrets, variables, and approval settings via `configure_repo`.
-8. On provisioning success: the PR body is updated with real Azure outputs (ACR, FQDNs, resource group). On failure: an error comment is posted to the PR and the error is re-thrown.
+5. The backend opens an initial bootstrap PR as soon as the scaffold branch is pushed — before any Azure provisioning — so failures leave a recoverable, reviewable GitHub surface. The action returns `{ repo_url, pr_url, pr_number, status: "provisioning" }` at this point.
+6. The backend runs `configure_cloud` and `configure_repo` asynchronously in the background (does not block the HTTP response or MCP tool return).
+7. Progress is posted as PR comments: "⏳ started", then either "✅ complete" with Azure outputs table or "❌ failed" with error details and retry instructions.
+8. On provisioning success: the PR body is updated with real Azure outputs (ACR, FQDNs, resource group). On failure: an error comment is posted to the PR — the error is NOT re-thrown. To retry, call `configure_cloud` + `configure_repo` directly.
 9. GitHub Actions runs the preview workflow on the bootstrap PR.
 10. The backend posts preview status and a screenshot back to the PR via `capture_preview` + `post_status` after workflow-driven deployment completes.
 
