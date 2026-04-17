@@ -119,13 +119,14 @@ else
   PRIVATE_KEY_CONTENT=$(cat "$GITHUB_APP_PRIVATE_KEY_PATH")
 
   echo "→ Storing GitHub App credentials as Container Apps secrets"
+  # Container Apps secret names are limited to 20 characters — use short names.
   az containerapp secret set \
     --name "${BACKEND_APP_NAME:-vibe-backend}" \
     --resource-group "$RESOURCE_GROUP" \
     --secrets \
-      "github-app-id=$GITHUB_APP_ID" \
-      "github-app-private-key=$PRIVATE_KEY_CONTENT" \
-      "github-app-installation-id=$GITHUB_APP_INSTALLATION_ID" \
+      "gh-app-id=$GITHUB_APP_ID" \
+      "gh-app-pkey=$PRIVATE_KEY_CONTENT" \
+      "gh-app-inst-id=$GITHUB_APP_INSTALLATION_ID" \
     --output none
 
   # Container Apps secrets are not injected automatically — they must be explicitly wired
@@ -135,9 +136,9 @@ else
     --name "${BACKEND_APP_NAME:-vibe-backend}" \
     --resource-group "$RESOURCE_GROUP" \
     --set-env-vars \
-      "GITHUB_APP_ID=secretref:github-app-id" \
-      "GITHUB_APP_PRIVATE_KEY=secretref:github-app-private-key" \
-      "GITHUB_APP_INSTALLATION_ID=secretref:github-app-installation-id" \
+      "GITHUB_APP_ID=secretref:gh-app-id" \
+      "GITHUB_APP_PRIVATE_KEY=secretref:gh-app-pkey" \
+      "GITHUB_APP_INSTALLATION_ID=secretref:gh-app-inst-id" \
     --output none
 
   echo "→ GitHub App credentials stored and wired to container environment"
