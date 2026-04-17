@@ -27,7 +27,9 @@ const CreateProjectParams = z.object({
  * GitHub-centered handoff surface), then provisions Azure infrastructure via
  * `configureCloud` and configures GitHub environments/branch-protections/OIDC secrets
  * via `configureRepo`. On provisioning success the PR body is updated with real Azure
- * outputs; on failure an error comment is posted to the PR before re-throwing.
+ * outputs; on failure an error comment with retry instructions is posted to the PR — the error
+ * is NOT re-thrown (provisioning runs in the background via `setImmediate` after the HTTP/MCP
+ * response has already been returned).
  *
  * **Template/adapter support:**
  * - Template: `"nextjs"` and `"node-api"` are implemented on the container-app path.
