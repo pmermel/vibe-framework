@@ -1,5 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+/**
+ * Flushes the setImmediate background task started by createProject.
+ * createProject returns immediately after opening the PR, then kicks off
+ * configureCloud + configureRepo in a setImmediate callback. Tests that
+ * assert on those calls must await this helper first.
+ */
+const flushBackground = async () => {
+  await new Promise<void>(resolve => setImmediate(resolve));
+  // Drain microtasks for all awaits inside provisionInBackground
+  for (let i = 0; i < 20; i++) {
+    await Promise.resolve();
+  }
+};
+
 // ---------------------------------------------------------------------------
 // Mock configure-cloud and configure-repo before importing createProject.
 // vi.mock factories are hoisted to the top of the file before any variable
@@ -583,6 +597,7 @@ describe("createProject — cloud and repo orchestration", () => {
       azure_subscription_id: "sub-123",
       azure_region: "westus2",
     });
+    await flushBackground();
 
     expect(mockConfigureCloud).toHaveBeenCalledWith({
       project_name: "my-app",
@@ -601,6 +616,7 @@ describe("createProject — cloud and repo orchestration", () => {
       approvers: ["alice"],
       azure_subscription_id: "sub-123",
     })) as Record<string, unknown>;
+    await flushBackground();
 
     expect(result).toHaveProperty("repo_url");
     expect(mockConfigureCloud).toHaveBeenCalledWith(
@@ -637,6 +653,7 @@ describe("createProject — cloud and repo orchestration", () => {
       approvers: ["alice"],
       azure_subscription_id: "sub-123",
     });
+    await flushBackground();
 
     expect(mockConfigureRepo).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -653,7 +670,7 @@ describe("createProject — cloud and repo orchestration", () => {
     );
   });
 
-  it("returns cloud_provisioned:true and repo_configured:true when azure_subscription_id is provided", async () => {
+  it("returns status:provisioning immediately (provisioning runs in background)", async () => {
     const result = (await createProject({
       name: "my-app",
       template: "nextjs",
@@ -662,8 +679,10 @@ describe("createProject — cloud and repo orchestration", () => {
       azure_subscription_id: "sub-123",
     })) as Record<string, unknown>;
 
-    expect(result.cloud_provisioned).toBe(true);
-    expect(result.repo_configured).toBe(true);
+    expect(result.status).toBe("provisioning");
+    expect(result).toHaveProperty("repo_url");
+    expect(result).toHaveProperty("pr_url");
+    expect(result).toHaveProperty("message");
   });
 
   it("throws a clear error when azure_subscription_id is absent and AZURE_SUBSCRIPTION_ID env var is not set", async () => {
@@ -686,34 +705,33 @@ describe("createProject — cloud and repo orchestration", () => {
   it("reads subscription from AZURE_SUBSCRIPTION_ID env var when param is omitted", async () => {
     process.env.AZURE_SUBSCRIPTION_ID = "env-sub-999"; // override the global default
 
-    const result = (await createProject({
+    await createProject({
       name: "my-app",
       template: "nextjs",
       github_owner: "acme-org",
       approvers: ["alice"],
       // no azure_subscription_id param
-    })) as Record<string, unknown>;
+    });
+    await flushBackground();
 
     expect(mockConfigureCloud).toHaveBeenCalledWith(
       expect.objectContaining({ azure_subscription_id: "env-sub-999" })
     );
-    expect(result.cloud_provisioned).toBe(true);
   });
 
   it("does not call configureRepo when configureCloud returns not_implemented", async () => {
     mockConfigureCloud.mockResolvedValue({ status: "not_implemented" });
 
-    const result = (await createProject({
+    await createProject({
       name: "my-app",
       template: "nextjs",
       github_owner: "acme-org",
       approvers: ["alice"],
       azure_subscription_id: "sub-123",
-    })) as Record<string, unknown>;
+    });
+    await flushBackground();
 
     expect(mockConfigureRepo).not.toHaveBeenCalled();
-    expect(result.cloud_provisioned).toBe(false);
-    expect(result.repo_configured).toBe(false);
   });
 
   it("opens bootstrap PR first with placeholder body, then updates with Azure outputs after provisioning", async () => {
@@ -729,6 +747,9 @@ describe("createProject — cloud and repo orchestration", () => {
     const prCreateCall = mockOctokit.pulls.create.mock.calls[0]?.[0] as { body: string };
     expect(prCreateCall.body).toContain("Azure OIDC trust");
     expect(prCreateCall.body).not.toContain("azurecr.io");
+
+    // Wait for background provisioning to complete
+    await flushBackground();
 
     // PR updated after provisioning succeeds with real Azure outputs
     expect(mockOctokit.pulls.update).toHaveBeenCalledWith(
@@ -753,25 +774,33 @@ describe("createProject — cloud and repo orchestration", () => {
     const prCreateCall = mockOctokit.pulls.create.mock.calls[0]?.[0] as { body: string };
     expect(prCreateCall.body).toContain("Azure OIDC trust");
     expect(prCreateCall.body).not.toContain("azurecr.io");
+
+    await flushBackground();
+
     expect(mockOctokit.pulls.update).toHaveBeenCalled();
   });
 
-  it("posts error comment to PR and re-throws when configureCloud fails", async () => {
+  it("posts error comment to PR when configureCloud fails (does not re-throw — runs in background)", async () => {
     const provisioningError = new Error("ARM deployment failed: quota exceeded");
     mockConfigureCloud.mockRejectedValue(provisioningError);
 
-    await expect(
-      createProject({
-        name: "my-app",
-        template: "nextjs",
-        github_owner: "acme-org",
-        approvers: ["alice"],
-        azure_subscription_id: "sub-123",
-      })
-    ).rejects.toThrow("ARM deployment failed: quota exceeded");
+    // createProject itself does NOT reject — it returns immediately with status:provisioning
+    // and runs provisioning in the background via setImmediate
+    const result = (await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    })) as Record<string, unknown>;
+
+    expect(result.status).toBe("provisioning");
 
     // PR must have been opened before the failure
     expect(mockOctokit.pulls.create).toHaveBeenCalled();
+
+    // Wait for background provisioning to run and fail
+    await flushBackground();
 
     // Error comment posted to PR so failure is visible in GitHub
     expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
@@ -781,7 +810,11 @@ describe("createProject — cloud and repo orchestration", () => {
         repo: "my-app",
       })
     );
-    const commentBody = (mockOctokit.issues.createComment.mock.calls[0]?.[0] as { body: string }).body;
+    // Find the error comment (not the "started" comment)
+    const errorCommentCall = (mockOctokit.issues.createComment.mock.calls as Array<[{ body: string }]>)
+      .find(([payload]) => payload.body.includes("Azure provisioning failed"));
+    expect(errorCommentCall).toBeDefined();
+    const commentBody = errorCommentCall![0].body;
     expect(commentBody).toContain("Azure provisioning failed");
     expect(commentBody).toContain("ARM deployment failed: quota exceeded");
   });
@@ -810,8 +843,8 @@ describe("createProject — react-vite on the static-web-app path", () => {
     })) as Record<string, unknown>;
 
     expect(result).toHaveProperty("repo_url");
-    expect(result.cloud_provisioned).toBe(true);
-    expect(result.repo_configured).toBe(true);
+    expect(result.status).toBe("provisioning");
+    await flushBackground();
   });
 
   it("calls configureCloud with adapter: static-web-app", async () => {
@@ -823,6 +856,7 @@ describe("createProject — react-vite on the static-web-app path", () => {
       approvers: ["alice"],
       azure_subscription_id: "sub-123",
     });
+    await flushBackground();
 
     expect(mockConfigureCloud).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -841,6 +875,7 @@ describe("createProject — react-vite on the static-web-app path", () => {
       approvers: ["alice"],
       azure_subscription_id: "sub-123",
     });
+    await flushBackground();
 
     const repoCall = mockConfigureRepo.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(repoCall).not.toHaveProperty("swa_deployment_token");
@@ -873,6 +908,7 @@ describe("createProject — react-vite on the static-web-app path", () => {
       approvers: ["alice"],
       azure_subscription_id: "sub-123",
     });
+    await flushBackground();
 
     const repoCall = mockConfigureRepo.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(repoCall).not.toHaveProperty("swa_deployment_token");

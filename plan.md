@@ -200,9 +200,9 @@ approvers:
   - scaffold the selected template
   - write `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, workflows, and infrastructure files
   - enable and validate GitHub Codespaces for the generated repository and include a working `.devcontainer/devcontainer.json`
-  - open an initial bootstrap PR as soon as the scaffold branch is pushed — before any Azure provisioning — so that failures leave a recoverable, reviewable GitHub surface
-  - provision a dedicated Azure Container Apps environment for the generated project (via `configure_cloud`), plus its GitHub environment settings (via `configure_repo`), after the PR is open
-  - on provisioning success: update the PR body with real Azure outputs; on failure: post an error comment to the PR and re-throw so the caller can recover
+  - open an initial bootstrap PR as soon as the scaffold branch is pushed — before any Azure provisioning — so that failures leave a recoverable, reviewable GitHub surface; return `{ repo_url, pr_url, pr_number, status: "provisioning" }` at this point
+  - provision a dedicated Azure Container Apps environment for the generated project (via `configure_cloud`), plus its GitHub environment settings (via `configure_repo`), asynchronously in the background after the HTTP/MCP response has been returned
+  - on provisioning success: update the PR body with real Azure outputs and post "✅ complete" comment; on failure: post an error comment with retry instructions — do NOT re-throw (background task; caller has already received the response)
   - validate project-specific deployment plumbing, including preview deployment, after the project repo and environment exist
 - `import_project` is the existing-repo adoption path — **currently scoped to Next.js repos and empty/bare repos only** (Phase 3):
   - validate the target repo is Next.js (package.json with `"next"` in deps) or empty; fail closed with a clear error for non-Next.js repos that have a package.json; repos with no package.json proceed as empty/bare (caller responsibility)
