@@ -75,12 +75,11 @@ resource stagingApp 'Microsoft.App/containerApps@2023-05-01' = {
         targetPort: 3000
         transport: 'auto'
       }
-      registries: [
-        {
-          server: acr.properties.loginServer
-          identity: 'system'
-        }
-      ]
+      // registries block intentionally omitted from initial deployment.
+      // The placeholder image is public (MCR) and needs no ACR auth.
+      // configure-cloud.ts wires the registry via a POST-deployment PATCH call
+      // after the AcrPull role assignment has had time to propagate — the same
+      // pattern used for the framework backend in framework-env.bicep.
     }
     template: {
       containers: [
@@ -121,12 +120,7 @@ resource productionApp 'Microsoft.App/containerApps@2023-05-01' = {
         targetPort: 3000
         transport: 'auto'
       }
-      registries: [
-        {
-          server: acr.properties.loginServer
-          identity: 'system'
-        }
-      ]
+      // registries block intentionally omitted — see stagingApp comment above.
     }
     template: {
       containers: [

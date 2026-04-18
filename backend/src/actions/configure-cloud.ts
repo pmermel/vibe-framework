@@ -61,6 +61,81 @@ function getTenantIdFromToken(token: string): string {
 }
 
 /**
+ * setContainerAppRegistry
+ *
+ * PATCHes the registry configuration onto one or more Container Apps after the
+ * initial ARM deployment completes. Called separately from the Bicep deployment
+ * because setting `registries: [{identity: "system"}]` in the same deployment
+ * as the AcrPull role assignment consistently triggers "Operation expired" — Azure
+ * attempts managed-identity registry auth before the RBAC assignment propagates.
+ *
+ * Retries up to 5 times with increasing delays (30 → 60 → 90 → 120 → 120 s) to
+ * give the AcrPull role assignment time to propagate across Azure's RBAC infrastructure.
+ * Throws on the final attempt if all retries fail.
+ */
+async function setContainerAppRegistry({
+  appNames,
+  resourceGroupName,
+  subscriptionId,
+  acrLoginServer,
+  armToken,
+}: {
+  appNames: string[];
+  resourceGroupName: string;
+  subscriptionId: string;
+  acrLoginServer: string;
+  armToken: string;
+}): Promise<void> {
+  const delays = [30_000, 60_000, 90_000, 120_000, 120_000];
+  const registryPatch = {
+    properties: {
+      configuration: {
+        registries: [{ server: acrLoginServer, identity: "system" }],
+      },
+    },
+  };
+
+  for (const appName of appNames) {
+    const url =
+      `${ARM_API}/subscriptions/${subscriptionId}/resourceGroups/${resourceGroupName}` +
+      `/providers/Microsoft.App/containerApps/${appName}?api-version=2023-05-01`;
+
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (attempt > 0) {
+        console.log(
+          `[configure_cloud] Registry PATCH for ${appName} — attempt ${attempt + 1}/${delays.length}, ` +
+          `waiting ${delays[attempt - 1]! / 1000}s for RBAC propagation...`
+        );
+        await new Promise(resolve => setTimeout(resolve, delays[attempt - 1]!));
+      }
+
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${armToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(registryPatch),
+      });
+
+      if (res.ok) {
+        console.log(`[configure_cloud] Registry wired successfully for ${appName}`);
+        lastError = undefined;
+        break;
+      }
+
+      const body = await res.text();
+      lastError = new Error(
+        `ARM PATCH registry for ${appName} failed (attempt ${attempt + 1}): HTTP ${res.status} — ${body}`
+      );
+      console.warn(`[configure_cloud] ${lastError.message}`);
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+  }
+}
+
+/**
  * configureCloud
  *
  * Provisions the Azure infrastructure needed for a generated project to deploy
@@ -345,6 +420,23 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
     `/subscriptions/${azure_subscription_id}/resourceGroups/${resourceGroupName}/providers/Microsoft.ContainerRegistry/registries/${registryName}`;
   const stagingFqdn: string = envOutputs.stagingFqdn?.value ?? "";
   const productionFqdn: string = envOutputs.productionFqdn?.value ?? "";
+
+  // 2b. Wire ACR registry to staging and production Container Apps.
+  //
+  // The registries block is intentionally absent from the Bicep template (see
+  // container-apps-env.bicep). Setting it in the same ARM deployment as the AcrPull
+  // role assignment reliably triggers "Operation expired" — Azure tries to configure
+  // the managed-identity registry auth before the RBAC assignment has propagated.
+  //
+  // Fix: apply the registry config via a separate PATCH after the deployment completes,
+  // with a retry loop that backs off to allow RBAC propagation time.
+  await setContainerAppRegistry({
+    appNames: [stagingAppName, productionAppName],
+    resourceGroupName,
+    subscriptionId: azure_subscription_id,
+    acrLoginServer,
+    armToken,
+  });
 
   // 3. For each GitHub Actions environment: create an Azure AD app registration,
   //    service principal, and OIDC federated credential via the Microsoft Graph API,

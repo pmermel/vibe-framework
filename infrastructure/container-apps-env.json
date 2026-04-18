@@ -5,7 +5,7 @@
     "_generator": {
       "name": "bicep",
       "version": "0.42.1.51946",
-      "templateHash": "17648848731751646173"
+      "templateHash": "9576426693606931427"
     }
   },
   "parameters": {
@@ -83,13 +83,7 @@
             "external": true,
             "targetPort": 3000,
             "transport": "auto"
-          },
-          "registries": [
-            {
-              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), '2023-07-01').loginServer]",
-              "identity": "system"
-            }
-          ]
+          }
         },
         "template": {
           "containers": [
@@ -109,7 +103,6 @@
         }
       },
       "dependsOn": [
-        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('appName')))]"
       ]
     },
@@ -128,13 +121,7 @@
             "external": true,
             "targetPort": 3000,
             "transport": "auto"
-          },
-          "registries": [
-            {
-              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName')), '2023-07-01').loginServer]",
-              "identity": "system"
-            }
-          ]
+          }
         },
         "template": {
           "containers": [
@@ -154,7 +141,6 @@
         }
       },
       "dependsOn": [
-        "[resourceId('Microsoft.ContainerRegistry/registries', parameters('registryName'))]",
         "[resourceId('Microsoft.App/managedEnvironments', format('{0}-env', parameters('appName')))]"
       ]
     },
