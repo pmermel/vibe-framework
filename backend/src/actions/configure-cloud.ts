@@ -61,6 +61,44 @@ function getTenantIdFromToken(token: string): string {
 }
 
 /**
+ * pollArmLro
+ *
+ * Polls an ARM Long-Running Operation URL (from `Azure-AsyncOperation` or `Location`
+ * response header) until the operation reaches a terminal state.
+ *
+ * ARM async operations return `{ "status": "Running" | "Succeeded" | "Failed" | "Canceled" }`.
+ * Polls every `pollIntervalMs` ms (default 5s) up to `timeoutMs` (default 10 min).
+ *
+ * @throws if the operation fails, is canceled, or the poll times out.
+ */
+export async function pollArmLro(
+  asyncOpUrl: string,
+  armToken: string,
+  timeoutMs = 600_000,
+  pollIntervalMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const res = await fetch(asyncOpUrl, {
+      headers: { Authorization: `Bearer ${armToken}` },
+    });
+    if (!res.ok) {
+      throw new Error(`ARM LRO poll failed: HTTP ${res.status} from ${asyncOpUrl}`);
+    }
+    const body = await res.json() as { status: string; error?: { message?: string } };
+    if (body.status === "Succeeded") return;
+    if (body.status === "Failed" || body.status === "Canceled") {
+      throw new Error(
+        `ARM LRO ${body.status}: ${body.error?.message ?? "(no error message)"} — ${asyncOpUrl}`
+      );
+    }
+    // "Running" / "InProgress" — continue polling
+  }
+  throw new Error(`ARM LRO timed out after ${timeoutMs / 1000}s — ${asyncOpUrl}`);
+}
+
+/**
  * setContainerAppRegistry
  *
  * PATCHes the registry configuration onto one or more Container Apps after the
@@ -69,24 +107,35 @@ function getTenantIdFromToken(token: string): string {
  * as the AcrPull role assignment consistently triggers "Operation expired" — Azure
  * attempts managed-identity registry auth before the RBAC assignment propagates.
  *
- * Retries up to 5 times with increasing delays (30 → 60 → 90 → 120 → 120 s) to
- * give the AcrPull role assignment time to propagate across Azure's RBAC infrastructure.
+ * The Container Apps Update API is an ARM Long-Running Operation:
+ * - `200 OK` — synchronous success (rare; Azure completed immediately)
+ * - `202 Accepted` — async; polls `Azure-AsyncOperation` or `Location` header URL
+ *   until the operation reaches `Succeeded` or `Failed`
+ *
+ * Retries the PATCH up to 5 times with increasing delays (30 → 60 → 90 → 120 → 120 s)
+ * to give the AcrPull role assignment time to propagate across Azure's RBAC infrastructure.
  * Throws on the final attempt if all retries fail.
  */
-async function setContainerAppRegistry({
+export async function setContainerAppRegistry({
   appNames,
   resourceGroupName,
   subscriptionId,
   acrLoginServer,
   armToken,
+  _pollIntervalMs = 5_000,
+  _retryDelays = [30_000, 60_000, 90_000, 120_000, 120_000],
 }: {
   appNames: string[];
   resourceGroupName: string;
   subscriptionId: string;
   acrLoginServer: string;
   armToken: string;
+  /** Override LRO poll interval (ms) — for testing only, do not set in production. */
+  _pollIntervalMs?: number;
+  /** Override retry delays (ms) between PATCH attempts — for testing only. */
+  _retryDelays?: number[];
 }): Promise<void> {
-  const delays = [30_000, 60_000, 90_000, 120_000, 120_000];
+  const delays = _retryDelays;
   const registryPatch = {
     properties: {
       configuration: {
@@ -116,7 +165,33 @@ async function setContainerAppRegistry({
         body: JSON.stringify(registryPatch),
       });
 
+      if (res.status === 202) {
+        // ARM Long-Running Operation — poll until terminal state.
+        const asyncOpUrl =
+          res.headers.get("Azure-AsyncOperation") ?? res.headers.get("Location");
+        if (!asyncOpUrl) {
+          lastError = new Error(
+            `ARM PATCH for ${appName} returned 202 but no Azure-AsyncOperation or Location header`
+          );
+          console.warn(`[configure_cloud] ${lastError.message}`);
+          continue;
+        }
+        try {
+          await pollArmLro(asyncOpUrl, armToken, 600_000, _pollIntervalMs);
+          console.log(`[configure_cloud] Registry wired successfully for ${appName} (LRO completed)`);
+          lastError = undefined;
+          break;
+        } catch (lroErr: unknown) {
+          lastError = new Error(
+            `ARM registry LRO for ${appName} failed (attempt ${attempt + 1}): ${String(lroErr)}`
+          );
+          console.warn(`[configure_cloud] ${lastError.message}`);
+          continue;
+        }
+      }
+
       if (res.ok) {
+        // 200 — synchronous success
         console.log(`[configure_cloud] Registry wired successfully for ${appName}`);
         lastError = undefined;
         break;

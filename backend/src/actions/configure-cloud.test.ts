@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Mocks — hoisted above all imports by Vitest
@@ -94,7 +94,7 @@ vi.stubGlobal("fetch", mockFetch);
 // Import under test (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { configureCloud } from "./configure-cloud.js";
+import { configureCloud, pollArmLro, setContainerAppRegistry } from "./configure-cloud.js";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -590,5 +590,179 @@ describe("configureCloud — error propagation", () => {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
     });
     await expect(configureCloud(validParams)).resolves.toMatchObject({ status: "provisioned" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: pollArmLro
+// ---------------------------------------------------------------------------
+
+describe("pollArmLro", () => {
+  // Isolate from the shared mockFetch — reset to a clean slate for each test
+  beforeEach(() => mockFetch.mockReset());
+
+  it("resolves immediately when the first poll returns Succeeded", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve({ status: "Succeeded" }),
+    });
+    await expect(
+      pollArmLro("https://management.azure.com/lro-url", "token", 10_000, 1)
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("polls until Succeeded after Running responses", async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: "Running" }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: "Running" }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: "Succeeded" }) });
+
+    await expect(
+      pollArmLro("https://management.azure.com/lro-url", "token", 10_000, 1)
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws when the LRO reaches Failed", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "Failed", error: { message: "Operation expired" } }),
+    });
+    await expect(
+      pollArmLro("https://management.azure.com/lro-url", "token", 10_000, 1)
+    ).rejects.toThrow("Operation expired");
+  });
+
+  it("throws when the LRO reaches Canceled", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "Canceled" }),
+    });
+    await expect(
+      pollArmLro("https://management.azure.com/lro-url", "token", 10_000, 1)
+    ).rejects.toThrow("Canceled");
+  });
+
+  it("throws when the poll HTTP call itself fails", async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 500 });
+    await expect(
+      pollArmLro("https://management.azure.com/lro-url", "token", 10_000, 1)
+    ).rejects.toThrow("ARM LRO poll failed: HTTP 500");
+  });
+
+  it("throws on timeout when LRO never completes", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ status: "Running" }),
+    });
+    // 50ms timeout, 30ms poll interval — exhausts after ~1–2 polls
+    await expect(
+      pollArmLro("https://management.azure.com/lro-url", "token", 50, 30)
+    ).rejects.toThrow("timed out");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: setContainerAppRegistry — LRO handling
+// ---------------------------------------------------------------------------
+
+describe("setContainerAppRegistry", () => {
+  // Zero-delay retry schedule so tests don't wait 30–120 s each
+  const baseArgs = {
+    appNames: ["my-app-staging"],
+    resourceGroupName: "my-app-rg",
+    subscriptionId: "sub-123",
+    acrLoginServer: "myappacr.azurecr.io",
+    armToken: "token",
+    _pollIntervalMs: 1,
+    _retryDelays: [0, 0, 0, 0, 0] as number[],
+  };
+
+  beforeEach(() => mockFetch.mockReset());
+
+  it("succeeds immediately on 200 (synchronous ARM response)", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
+    await expect(setContainerAppRegistry(baseArgs)).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("polls LRO to Succeeded on 202 response with Azure-AsyncOperation header", async () => {
+    const asyncUrl = "https://management.azure.com/async-op-url";
+    mockFetch
+      // PATCH returns 202 with LRO header
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 202,
+        headers: { get: (h: string) => (h === "Azure-AsyncOperation" ? asyncUrl : null) },
+      })
+      // LRO poll: Running → Succeeded
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: "Running" }) })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: "Succeeded" }) });
+
+    await expect(setContainerAppRegistry(baseArgs)).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    // Second call (index 1) must be the LRO poll, not another PATCH
+    expect(mockFetch.mock.calls[1]![0]).toBe(asyncUrl);
+  });
+
+  it("polls LRO via Location header when Azure-AsyncOperation is absent", async () => {
+    const locationUrl = "https://management.azure.com/location-url";
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 202,
+        headers: { get: (h: string) => (h === "Location" ? locationUrl : null) },
+      })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: "Succeeded" }) });
+
+    await expect(setContainerAppRegistry(baseArgs)).resolves.toBeUndefined();
+    expect(mockFetch.mock.calls[1]![0]).toBe(locationUrl);
+  });
+
+  it("retries PATCH when LRO reaches Failed (RBAC not yet propagated)", async () => {
+    const asyncUrl = "https://management.azure.com/async-op-url";
+    const headers = { get: (h: string) => (h === "Azure-AsyncOperation" ? asyncUrl : null) };
+
+    mockFetch
+      // Attempt 1: PATCH → 202 → LRO Failed
+      .mockResolvedValueOnce({ ok: false, status: 202, headers })
+      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: "Failed", error: { message: "Operation expired" } }) })
+      // Attempt 2: PATCH → 200 (RBAC propagated)
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+
+    await expect(setContainerAppRegistry(baseArgs)).resolves.toBeUndefined();
+    // 3 fetch calls: PATCH(202) + LRO poll(Failed) + PATCH(200)
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws after all retries exhausted when every LRO fails", async () => {
+    const asyncUrl = "https://management.azure.com/async-op-url";
+    const headers = { get: (h: string) => (h === "Azure-AsyncOperation" ? asyncUrl : null) };
+    const failedLro = { ok: true, json: () => Promise.resolve({ status: "Failed", error: { message: "Operation expired" } }) };
+
+    // 5 attempts each → PATCH(202) + LRO(Failed)
+    for (let i = 0; i < 5; i++) {
+      mockFetch
+        .mockResolvedValueOnce({ ok: false, status: 202, headers })
+        .mockResolvedValueOnce(failedLro);
+    }
+
+    await expect(setContainerAppRegistry(baseArgs)).rejects.toThrow("Operation expired");
+    expect(mockFetch).toHaveBeenCalledTimes(10); // 5 × (PATCH + LRO poll)
+  });
+
+  it("throws after all retries when 202 has no polling URL header", async () => {
+    const noHeader = { get: () => null };
+
+    // 5 attempts each fail immediately — no LRO poll needed
+    for (let i = 0; i < 5; i++) {
+      mockFetch.mockResolvedValueOnce({ ok: false, status: 202, headers: noHeader });
+    }
+
+    await expect(setContainerAppRegistry(baseArgs)).rejects.toThrow(
+      "no Azure-AsyncOperation or Location header"
+    );
+    expect(mockFetch).toHaveBeenCalledTimes(5); // just the 5 PATCH calls
   });
 });
