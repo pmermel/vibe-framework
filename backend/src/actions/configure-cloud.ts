@@ -61,6 +61,214 @@ function getTenantIdFromToken(token: string): string {
 }
 
 /**
+ * pollArmLro
+ *
+ * Polls an ARM `Azure-AsyncOperation` status-monitor URL until the operation reaches
+ * a terminal state. The status-monitor always returns JSON with a `status` field:
+ * `"Running"` | `"InProgress"` → continue polling
+ * `"Succeeded"` → resolve
+ * `"Failed"` | `"Canceled"` → throw
+ *
+ * Do NOT use this for `Location` header URLs — those use HTTP status codes, not JSON
+ * status bodies. Use `pollArmLocation` for `Location` URLs.
+ *
+ * Polls every `pollIntervalMs` ms (default 5s) up to `timeoutMs` (default 10 min).
+ * @throws if the operation fails, is canceled, the HTTP call fails, or the poll times out.
+ */
+export async function pollArmLro(
+  asyncOpUrl: string,
+  armToken: string,
+  timeoutMs = 600_000,
+  pollIntervalMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const res = await fetch(asyncOpUrl, {
+      headers: { Authorization: `Bearer ${armToken}` },
+    });
+    if (!res.ok) {
+      throw new Error(`ARM LRO poll failed: HTTP ${res.status} from ${asyncOpUrl}`);
+    }
+    const body = await res.json() as { status: string; error?: { message?: string } };
+    if (body.status === "Succeeded") return;
+    if (body.status === "Failed" || body.status === "Canceled") {
+      throw new Error(
+        `ARM LRO ${body.status}: ${body.error?.message ?? "(no error message)"} — ${asyncOpUrl}`
+      );
+    }
+    // "Running" / "InProgress" — continue polling
+  }
+  throw new Error(`ARM LRO timed out after ${timeoutMs / 1000}s — ${asyncOpUrl}`);
+}
+
+/**
+ * pollArmLocation
+ *
+ * Polls an ARM `Location` redirect URL until the operation completes.
+ * Location polling uses HTTP status codes, not a JSON status body:
+ * `202 Accepted` → operation still running, continue polling
+ * `200 OK` or `204 No Content` → operation succeeded, return
+ * Any other status → operation failed, throw
+ *
+ * Do NOT use this for `Azure-AsyncOperation` URLs — those return JSON status bodies.
+ * Use `pollArmLro` for `Azure-AsyncOperation` URLs.
+ *
+ * Polls every `pollIntervalMs` ms (default 5s) up to `timeoutMs` (default 10 min).
+ * @throws if the operation fails or the poll times out.
+ */
+export async function pollArmLocation(
+  locationUrl: string,
+  armToken: string,
+  timeoutMs = 600_000,
+  pollIntervalMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const res = await fetch(locationUrl, {
+      headers: { Authorization: `Bearer ${armToken}` },
+    });
+    if (res.status === 200 || res.status === 204) return; // success
+    if (res.status === 202) continue; // still running
+    throw new Error(`ARM Location poll failed: HTTP ${res.status} from ${locationUrl}`);
+  }
+  throw new Error(`ARM Location poll timed out after ${timeoutMs / 1000}s — ${locationUrl}`);
+}
+
+/**
+ * setContainerAppRegistry
+ *
+ * PATCHes the registry configuration onto one or more Container Apps after the
+ * initial ARM deployment completes. Called separately from the Bicep deployment
+ * because setting `registries: [{identity: "system"}]` in the same deployment
+ * as the AcrPull role assignment consistently triggers "Operation expired" — Azure
+ * attempts managed-identity registry auth before the RBAC assignment propagates.
+ *
+ * The PATCH body includes `location` (the Azure region) because the Container Apps
+ * Update API schema requires it. Omitting `location` causes an ARM validation error
+ * before the LRO can start.
+ *
+ * The Container Apps Update API is an ARM Long-Running Operation with two possible
+ * async response shapes:
+ * - `200 OK` — synchronous success (Azure completed immediately)
+ * - `202 Accepted` with `Azure-AsyncOperation` header → JSON status-monitor polling
+ *   via `pollArmLro()` (`{status: "Running"|"Succeeded"|"Failed"}`)
+ * - `202 Accepted` with `Location` header only → HTTP-status polling via
+ *   `pollArmLocation()` (`202` = still running, `200`/`204` = done)
+ *
+ * Retries the PATCH up to 5 times with increasing delays (30 → 60 → 90 → 120 → 120 s)
+ * to give the AcrPull role assignment time to propagate across Azure's RBAC infrastructure.
+ * Throws on the final attempt if all retries fail.
+ */
+export async function setContainerAppRegistry({
+  appNames,
+  resourceGroupName,
+  subscriptionId,
+  location,
+  acrLoginServer,
+  armToken,
+  _pollIntervalMs = 5_000,
+  _retryDelays = [30_000, 60_000, 90_000, 120_000, 120_000],
+}: {
+  appNames: string[];
+  resourceGroupName: string;
+  subscriptionId: string;
+  /** Azure region of the Container Apps — required by the PATCH body (ARM schema). */
+  location: string;
+  acrLoginServer: string;
+  armToken: string;
+  /** Override LRO poll interval (ms) — for testing only, do not set in production. */
+  _pollIntervalMs?: number;
+  /** Override retry delays (ms) between PATCH attempts — for testing only. */
+  _retryDelays?: number[];
+}): Promise<void> {
+  const delays = _retryDelays;
+  // `location` is a required field in the Container Apps Update PATCH body (ARM schema).
+  // Omitting it causes a validation error before the LRO can begin.
+  const registryPatch = {
+    location,
+    properties: {
+      configuration: {
+        registries: [{ server: acrLoginServer, identity: "system" }],
+      },
+    },
+  };
+
+  for (const appName of appNames) {
+    const url =
+      `${ARM_API}/subscriptions/${subscriptionId}/resourceGroups/${resourceGroupName}` +
+      `/providers/Microsoft.App/containerApps/${appName}?api-version=2023-05-01`;
+
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (attempt > 0) {
+        console.log(
+          `[configure_cloud] Registry PATCH for ${appName} — attempt ${attempt + 1}/${delays.length}, ` +
+          `waiting ${delays[attempt - 1]! / 1000}s for RBAC propagation...`
+        );
+        await new Promise(resolve => setTimeout(resolve, delays[attempt - 1]!));
+      }
+
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${armToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(registryPatch),
+      });
+
+      if (res.status === 202) {
+        // ARM Long-Running Operation — dispatch to the correct poller based on which
+        // async header the API returned:
+        //   Azure-AsyncOperation → JSON status-monitor polling via pollArmLro()
+        //   Location (only)      → HTTP-status polling via pollArmLocation()
+        const asyncOpUrl = res.headers.get("Azure-AsyncOperation");
+        const locationUrl = res.headers.get("Location");
+        if (!asyncOpUrl && !locationUrl) {
+          lastError = new Error(
+            `ARM PATCH for ${appName} returned 202 but no Azure-AsyncOperation or Location header`
+          );
+          console.warn(`[configure_cloud] ${lastError.message}`);
+          continue;
+        }
+        try {
+          if (asyncOpUrl) {
+            await pollArmLro(asyncOpUrl, armToken, 600_000, _pollIntervalMs);
+          } else {
+            await pollArmLocation(locationUrl!, armToken, 600_000, _pollIntervalMs);
+          }
+          console.log(`[configure_cloud] Registry wired successfully for ${appName} (LRO completed)`);
+          lastError = undefined;
+          break;
+        } catch (lroErr: unknown) {
+          lastError = new Error(
+            `ARM registry LRO for ${appName} failed (attempt ${attempt + 1}): ${String(lroErr)}`
+          );
+          console.warn(`[configure_cloud] ${lastError.message}`);
+          continue;
+        }
+      }
+
+      if (res.ok) {
+        // 200 — synchronous success
+        console.log(`[configure_cloud] Registry wired successfully for ${appName}`);
+        lastError = undefined;
+        break;
+      }
+
+      const body = await res.text();
+      lastError = new Error(
+        `ARM PATCH registry for ${appName} failed (attempt ${attempt + 1}): HTTP ${res.status} — ${body}`
+      );
+      console.warn(`[configure_cloud] ${lastError.message}`);
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+  }
+}
+
+/**
  * configureCloud
  *
  * Provisions the Azure infrastructure needed for a generated project to deploy
@@ -345,6 +553,24 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
     `/subscriptions/${azure_subscription_id}/resourceGroups/${resourceGroupName}/providers/Microsoft.ContainerRegistry/registries/${registryName}`;
   const stagingFqdn: string = envOutputs.stagingFqdn?.value ?? "";
   const productionFqdn: string = envOutputs.productionFqdn?.value ?? "";
+
+  // 2b. Wire ACR registry to staging and production Container Apps.
+  //
+  // The registries block is intentionally absent from the Bicep template (see
+  // container-apps-env.bicep). Setting it in the same ARM deployment as the AcrPull
+  // role assignment reliably triggers "Operation expired" — Azure tries to configure
+  // the managed-identity registry auth before the RBAC assignment has propagated.
+  //
+  // Fix: apply the registry config via a separate PATCH after the deployment completes,
+  // with a retry loop that backs off to allow RBAC propagation time.
+  await setContainerAppRegistry({
+    appNames: [stagingAppName, productionAppName],
+    resourceGroupName,
+    subscriptionId: azure_subscription_id,
+    location: azure_region,
+    acrLoginServer,
+    armToken,
+  });
 
   // 3. For each GitHub Actions environment: create an Azure AD app registration,
   //    service principal, and OIDC federated credential via the Microsoft Graph API,

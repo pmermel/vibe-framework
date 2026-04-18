@@ -197,7 +197,12 @@ All three secrets must be set on the `staging` GitHub environment.
 
 ### Required Pre-existing Azure Resources
 
-The staging Container App must already exist before the workflow runs. Bootstrap automation provisions it via `infrastructure/container-apps-env.bicep`. The workflow calls `az containerapp update` and will fail if the app does not exist.
+The staging Container App must already exist and be fully wired before the workflow runs:
+
+- Provisioned by `infrastructure/container-apps-env.bicep` (managed identity + `AcrPull` role assignment).
+- Registry config (`registries: [{server: ..., identity: "system"}]`) applied by `configure_cloud` via ARM PATCH after RBAC propagation.
+
+The workflow calls `az containerapp update` and will fail if the app does not exist or the registry config has not been applied.
 
 ### Outputs
 
@@ -216,7 +221,7 @@ The staging Container App must already exist before the workflow runs. Bootstrap
 
 - Builds and pushes image tagged `:staging` to ACR (overwrites the previous `:staging` tag on every push).
 - Calls `az containerapp update` on the pre-provisioned staging Container App.
-- Managed identity and AcrPull are assigned at Bicep provision time — no runtime identity wiring.
+- Managed identity and `AcrPull` are assigned by Bicep at provision time; registry config is applied by `configure_cloud` post-deployment. No runtime identity wiring in this workflow.
 
 ### Thin Wrapper (generated project pattern)
 
@@ -279,7 +284,10 @@ The approval gate is what pauses the deploy job before any Azure commands run. P
 
 ### Required Pre-existing Azure Resources
 
-The production Container App must already exist before the workflow runs. Provisioned by `infrastructure/container-apps-env.bicep` during project bootstrap.
+The production Container App must already exist and be fully wired before the workflow runs:
+
+- Provisioned by `infrastructure/container-apps-env.bicep` (managed identity + `AcrPull` role assignment).
+- Registry config (`registries: [{server: ..., identity: "system"}]`) applied by `configure_cloud` via ARM PATCH after RBAC propagation.
 
 ### Outputs
 
@@ -299,7 +307,7 @@ The production Container App must already exist before the workflow runs. Provis
 - The `deploy` job declares `environment: production`. GitHub enforces the approval gate before any steps run.
 - Builds image tagged `:latest` from the production branch (not promoted from `:staging`). This ensures the production build always reflects the exact code in `main`.
 - Calls `az containerapp update` on the pre-provisioned production Container App.
-- Managed identity and AcrPull are assigned at Bicep provision time — no runtime identity wiring.
+- Managed identity and `AcrPull` are assigned by Bicep at provision time; registry config is applied by `configure_cloud` post-deployment. No runtime identity wiring in this workflow.
 
 ### Thin Wrapper (generated project pattern)
 

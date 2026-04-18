@@ -133,14 +133,22 @@ Outputs used by bootstrap:
 
 All Container Apps pull images from a private Azure Container Registry using system-assigned managed identity with the `AcrPull` role. No admin credentials or stored registry passwords are used.
 
-### Staging and Production — Provisioned at Bootstrap
+### Staging and Production — Provisioned at Bootstrap (Two-Phase)
 
-Managed identity and AcrPull are assigned by `infrastructure/container-apps-env.bicep` at project creation time:
+Staging and production Container Apps are fully wired for ACR pull in two phases during `configure_cloud`, before any workflow runs:
 
-- `stagingApp` and `productionApp` resources in Bicep declare `identity: { type: 'SystemAssigned' }`.
-- Role assignments `stagingAcrPull` and `productionAcrPull` in Bicep grant `AcrPull` (role ID `7f951dda-4ed3-4680-a7ca-43fe172d538d`) on the ACR to each app's managed identity principal.
+**Phase 1 — Bicep (`infrastructure/container-apps-env.bicep`):**
+- `stagingApp` and `productionApp` resources declare `identity: { type: 'SystemAssigned' }`, creating the system-assigned managed identity.
+- Role assignments `stagingAcrPull` and `productionAcrPull` grant `AcrPull` (role ID `7f951dda-4ed3-4680-a7ca-43fe172d538d`) on the ACR to each app's managed identity principal.
 - The Bicep role assignment names are deterministic GUIDs derived from ACR ID + app ID + role ID, making them idempotent on re-deployment.
-- Because identity and AcrPull are in place before the first workflow run, `reusable-staging.yml` and `reusable-production.yml` call `az containerapp update` directly — no runtime identity wiring.
+- The `registries` block is **intentionally omitted** from the Bicep template. Setting it in the same ARM deployment as the `AcrPull` role assignment causes "Operation expired" — Azure attempts managed-identity registry auth before RBAC propagates (30–120 s).
+
+**Phase 2 — `configure_cloud` post-deployment PATCH:**
+- After the Bicep ARM deployment completes, `configure_cloud` calls `setContainerAppRegistry()`, which PATCHes `registries: [{server: <acr-login-server>, identity: "system"}]` onto each Container App via the ARM REST API.
+- Up to 5 retries with increasing delays (30/60/90/120/120 s) allow the Phase 1 `AcrPull` role assignment time to propagate before the registry config is applied.
+- The patch is an ARM Long-Running Operation: `202 Accepted` with `Azure-AsyncOperation` header → JSON status-monitor polling; `202 Accepted` with `Location` header → HTTP-status polling; `200 OK` → synchronous success.
+
+Because both phases complete before the first workflow run, `reusable-staging.yml` and `reusable-production.yml` call `az containerapp update` directly — no runtime identity wiring.
 
 ### Preview — Wired at First Deploy
 
@@ -174,6 +182,7 @@ Each contract element is owned by exactly one layer. This table is the canonical
 | Production Container App resource | Bicep | `infrastructure/container-apps-env.bicep` |
 | Managed identity on staging/production Container Apps | Bicep | `infrastructure/container-apps-env.bicep` |
 | AcrPull role on staging/production managed identities | Bicep | `infrastructure/container-apps-env.bicep` |
+| Registry config (`registries` block) on staging/production Container Apps | Backend action | `configure_cloud` — ARM PATCH via `setContainerAppRegistry()` after Bicep deployment, with RBAC-propagation retry loop |
 | Azure AD app registration per environment | Backend action | `configure_cloud` via Microsoft Graph REST API (`POST /v1.0/applications`) |
 | OIDC federated credentials per environment | Backend action | `configure_cloud` via Microsoft Graph REST API (`POST /v1.0/applications/{id}/federatedIdentityCredentials`) |
 | Contributor role on resource group per environment SP | Backend action | `configure_cloud` via ARM REST API (`PUT .../roleAssignments/{deterministicGuid}`) |
@@ -205,6 +214,7 @@ Deploys `infrastructure/container-apps-env.json` (pre-compiled ARM template — 
 After completion:
 
 - Project resource group exists with staging and production Container Apps provisioned.
+- Registry config (`registries: [{server: <acr-login-server>, identity: "system"}]`) is applied to staging and production Container Apps via ARM PATCH (`setContainerAppRegistry()`), with retries to allow `AcrPull` RBAC propagation. Both managed-identity assignment (Bicep) and registry wiring (`configure_cloud` PATCH) are complete before any workflow runs.
 - Three Azure AD app registrations exist (one per GitHub environment), each with a service principal and federated credential scoped to that environment.
 - Contributor (resource group) and AcrPush (ACR) roles are assigned for each service principal.
 - All provisioning is idempotent: check-before-create for Graph resources, 409-as-success for RBAC assignments.
