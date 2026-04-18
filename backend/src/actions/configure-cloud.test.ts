@@ -94,7 +94,7 @@ vi.stubGlobal("fetch", mockFetch);
 // Import under test (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { configureCloud, pollArmLro, setContainerAppRegistry } from "./configure-cloud.js";
+import { configureCloud, pollArmLro, pollArmLocation, setContainerAppRegistry } from "./configure-cloud.js";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -664,6 +664,55 @@ describe("pollArmLro", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Tests: pollArmLocation
+// ---------------------------------------------------------------------------
+
+describe("pollArmLocation", () => {
+  beforeEach(() => mockFetch.mockReset());
+
+  it("resolves on 200 (success — no JSON body parsed)", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
+    await expect(
+      pollArmLocation("https://management.azure.com/location-url", "token", 10_000, 1)
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves on 204 (success — no content)", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204 });
+    await expect(
+      pollArmLocation("https://management.azure.com/location-url", "token", 10_000, 1)
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("polls through 202 responses until 200", async () => {
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, status: 202 })
+      .mockResolvedValueOnce({ ok: true, status: 202 })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    await expect(
+      pollArmLocation("https://management.azure.com/location-url", "token", 10_000, 1)
+    ).resolves.toBeUndefined();
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("throws on a non-202/200/204 HTTP status", async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 500 });
+    await expect(
+      pollArmLocation("https://management.azure.com/location-url", "token", 10_000, 1)
+    ).rejects.toThrow("ARM Location poll failed: HTTP 500");
+  });
+
+  it("throws on timeout when Location never completes", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 202 });
+    await expect(
+      pollArmLocation("https://management.azure.com/location-url", "token", 50, 30)
+    ).rejects.toThrow("timed out");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Tests: setContainerAppRegistry — LRO handling
 // ---------------------------------------------------------------------------
 
@@ -706,18 +755,25 @@ describe("setContainerAppRegistry", () => {
     expect(mockFetch.mock.calls[1]![0]).toBe(asyncUrl);
   });
 
-  it("polls LRO via Location header when Azure-AsyncOperation is absent", async () => {
+  it("polls via Location header (HTTP-status protocol) when Azure-AsyncOperation is absent", async () => {
     const locationUrl = "https://management.azure.com/location-url";
     mockFetch
+      // PATCH → 202 with Location header only (no Azure-AsyncOperation)
       .mockResolvedValueOnce({
         ok: false,
         status: 202,
         headers: { get: (h: string) => (h === "Location" ? locationUrl : null) },
       })
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ status: "Succeeded" }) });
+      // pollArmLocation poll 1: 202 = still running
+      .mockResolvedValueOnce({ ok: true, status: 202 })
+      // pollArmLocation poll 2: 200 = success (no JSON body parsed)
+      .mockResolvedValueOnce({ ok: true, status: 200 });
 
     await expect(setContainerAppRegistry(baseArgs)).resolves.toBeUndefined();
+    // 3 calls: PATCH(202) + Location poll(202) + Location poll(200)
+    expect(mockFetch).toHaveBeenCalledTimes(3);
     expect(mockFetch.mock.calls[1]![0]).toBe(locationUrl);
+    expect(mockFetch.mock.calls[2]![0]).toBe(locationUrl);
   });
 
   it("retries PATCH when LRO reaches Failed (RBAC not yet propagated)", async () => {

@@ -63,13 +63,17 @@ function getTenantIdFromToken(token: string): string {
 /**
  * pollArmLro
  *
- * Polls an ARM Long-Running Operation URL (from `Azure-AsyncOperation` or `Location`
- * response header) until the operation reaches a terminal state.
+ * Polls an ARM `Azure-AsyncOperation` status-monitor URL until the operation reaches
+ * a terminal state. The status-monitor always returns JSON with a `status` field:
+ * `"Running"` | `"InProgress"` → continue polling
+ * `"Succeeded"` → resolve
+ * `"Failed"` | `"Canceled"` → throw
  *
- * ARM async operations return `{ "status": "Running" | "Succeeded" | "Failed" | "Canceled" }`.
+ * Do NOT use this for `Location` header URLs — those use HTTP status codes, not JSON
+ * status bodies. Use `pollArmLocation` for `Location` URLs.
+ *
  * Polls every `pollIntervalMs` ms (default 5s) up to `timeoutMs` (default 10 min).
- *
- * @throws if the operation fails, is canceled, or the poll times out.
+ * @throws if the operation fails, is canceled, the HTTP call fails, or the poll times out.
  */
 export async function pollArmLro(
   asyncOpUrl: string,
@@ -99,6 +103,40 @@ export async function pollArmLro(
 }
 
 /**
+ * pollArmLocation
+ *
+ * Polls an ARM `Location` redirect URL until the operation completes.
+ * Location polling uses HTTP status codes, not a JSON status body:
+ * `202 Accepted` → operation still running, continue polling
+ * `200 OK` or `204 No Content` → operation succeeded, return
+ * Any other status → operation failed, throw
+ *
+ * Do NOT use this for `Azure-AsyncOperation` URLs — those return JSON status bodies.
+ * Use `pollArmLro` for `Azure-AsyncOperation` URLs.
+ *
+ * Polls every `pollIntervalMs` ms (default 5s) up to `timeoutMs` (default 10 min).
+ * @throws if the operation fails or the poll times out.
+ */
+export async function pollArmLocation(
+  locationUrl: string,
+  armToken: string,
+  timeoutMs = 600_000,
+  pollIntervalMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const res = await fetch(locationUrl, {
+      headers: { Authorization: `Bearer ${armToken}` },
+    });
+    if (res.status === 200 || res.status === 204) return; // success
+    if (res.status === 202) continue; // still running
+    throw new Error(`ARM Location poll failed: HTTP ${res.status} from ${locationUrl}`);
+  }
+  throw new Error(`ARM Location poll timed out after ${timeoutMs / 1000}s — ${locationUrl}`);
+}
+
+/**
  * setContainerAppRegistry
  *
  * PATCHes the registry configuration onto one or more Container Apps after the
@@ -107,10 +145,13 @@ export async function pollArmLro(
  * as the AcrPull role assignment consistently triggers "Operation expired" — Azure
  * attempts managed-identity registry auth before the RBAC assignment propagates.
  *
- * The Container Apps Update API is an ARM Long-Running Operation:
- * - `200 OK` — synchronous success (rare; Azure completed immediately)
- * - `202 Accepted` — async; polls `Azure-AsyncOperation` or `Location` header URL
- *   until the operation reaches `Succeeded` or `Failed`
+ * The Container Apps Update API is an ARM Long-Running Operation with two possible
+ * async response shapes:
+ * - `200 OK` — synchronous success (Azure completed immediately)
+ * - `202 Accepted` with `Azure-AsyncOperation` header → JSON status-monitor polling
+ *   via `pollArmLro()` (`{status: "Running"|"Succeeded"|"Failed"}`)
+ * - `202 Accepted` with `Location` header only → HTTP-status polling via
+ *   `pollArmLocation()` (`202` = still running, `200`/`204` = done)
  *
  * Retries the PATCH up to 5 times with increasing delays (30 → 60 → 90 → 120 → 120 s)
  * to give the AcrPull role assignment time to propagate across Azure's RBAC infrastructure.
@@ -166,10 +207,13 @@ export async function setContainerAppRegistry({
       });
 
       if (res.status === 202) {
-        // ARM Long-Running Operation — poll until terminal state.
-        const asyncOpUrl =
-          res.headers.get("Azure-AsyncOperation") ?? res.headers.get("Location");
-        if (!asyncOpUrl) {
+        // ARM Long-Running Operation — dispatch to the correct poller based on which
+        // async header the API returned:
+        //   Azure-AsyncOperation → JSON status-monitor polling via pollArmLro()
+        //   Location (only)      → HTTP-status polling via pollArmLocation()
+        const asyncOpUrl = res.headers.get("Azure-AsyncOperation");
+        const locationUrl = res.headers.get("Location");
+        if (!asyncOpUrl && !locationUrl) {
           lastError = new Error(
             `ARM PATCH for ${appName} returned 202 but no Azure-AsyncOperation or Location header`
           );
@@ -177,7 +221,11 @@ export async function setContainerAppRegistry({
           continue;
         }
         try {
-          await pollArmLro(asyncOpUrl, armToken, 600_000, _pollIntervalMs);
+          if (asyncOpUrl) {
+            await pollArmLro(asyncOpUrl, armToken, 600_000, _pollIntervalMs);
+          } else {
+            await pollArmLocation(locationUrl!, armToken, 600_000, _pollIntervalMs);
+          }
           console.log(`[configure_cloud] Registry wired successfully for ${appName} (LRO completed)`);
           lastError = undefined;
           break;
