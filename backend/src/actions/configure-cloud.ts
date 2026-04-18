@@ -145,6 +145,10 @@ export async function pollArmLocation(
  * as the AcrPull role assignment consistently triggers "Operation expired" — Azure
  * attempts managed-identity registry auth before the RBAC assignment propagates.
  *
+ * The PATCH body includes `location` (the Azure region) because the Container Apps
+ * Update API schema requires it. Omitting `location` causes an ARM validation error
+ * before the LRO can start.
+ *
  * The Container Apps Update API is an ARM Long-Running Operation with two possible
  * async response shapes:
  * - `200 OK` — synchronous success (Azure completed immediately)
@@ -161,6 +165,7 @@ export async function setContainerAppRegistry({
   appNames,
   resourceGroupName,
   subscriptionId,
+  location,
   acrLoginServer,
   armToken,
   _pollIntervalMs = 5_000,
@@ -169,6 +174,8 @@ export async function setContainerAppRegistry({
   appNames: string[];
   resourceGroupName: string;
   subscriptionId: string;
+  /** Azure region of the Container Apps — required by the PATCH body (ARM schema). */
+  location: string;
   acrLoginServer: string;
   armToken: string;
   /** Override LRO poll interval (ms) — for testing only, do not set in production. */
@@ -177,7 +184,10 @@ export async function setContainerAppRegistry({
   _retryDelays?: number[];
 }): Promise<void> {
   const delays = _retryDelays;
+  // `location` is a required field in the Container Apps Update PATCH body (ARM schema).
+  // Omitting it causes a validation error before the LRO can begin.
   const registryPatch = {
+    location,
     properties: {
       configuration: {
         registries: [{ server: acrLoginServer, identity: "system" }],
@@ -557,6 +567,7 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
     appNames: [stagingAppName, productionAppName],
     resourceGroupName,
     subscriptionId: azure_subscription_id,
+    location: azure_region,
     acrLoginServer,
     armToken,
   });

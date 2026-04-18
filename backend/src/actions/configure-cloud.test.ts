@@ -722,6 +722,7 @@ describe("setContainerAppRegistry", () => {
     appNames: ["my-app-staging"],
     resourceGroupName: "my-app-rg",
     subscriptionId: "sub-123",
+    location: "eastus2",
     acrLoginServer: "myappacr.azurecr.io",
     armToken: "token",
     _pollIntervalMs: 1,
@@ -734,6 +735,17 @@ describe("setContainerAppRegistry", () => {
     mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
     await expect(setContainerAppRegistry(baseArgs)).resolves.toBeUndefined();
     expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("includes location in the PATCH body (required by ARM schema)", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
+    await setContainerAppRegistry(baseArgs);
+    const patchCall = mockFetch.mock.calls[0] as [string, { method?: string; body?: string }];
+    const body = JSON.parse(patchCall[1]?.body ?? "{}") as Record<string, unknown>;
+    expect(body.location).toBe("eastus2");
+    expect((body.properties as Record<string, unknown>)?.configuration).toMatchObject({
+      registries: [{ server: "myappacr.azurecr.io", identity: "system" }],
+    });
   });
 
   it("polls LRO to Succeeded on 202 response with Azure-AsyncOperation header", async () => {
