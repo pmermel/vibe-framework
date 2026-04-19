@@ -61,13 +61,13 @@ on:
         description: "Maximum number of active preview Container Apps. When this limit is reached, the oldest preview is deleted before the new one is deployed."
         type: number
         default: 3
-    secrets:
-      AZURE_CLIENT_ID:
-        required: true
-      AZURE_TENANT_ID:
-        required: true
-      AZURE_SUBSCRIPTION_ID:
-        required: true
+    # Note: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID are NOT
+    # declared here. They are environment-scoped secrets in the calling repo
+    # (scoped to the "preview" environment). The reusable workflow's jobs
+    # access them directly via `environment: preview` — they do not need to
+    # be passed through the workflow_call secrets interface. Declaring them
+    # as required: true here would cause startup_failure because they are not
+    # accessible in the caller's job context (which has no environment set).
     outputs:
       preview_url:
         description: "HTTPS URL of the deployed preview environment"
