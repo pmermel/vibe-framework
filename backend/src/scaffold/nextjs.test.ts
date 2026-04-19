@@ -43,6 +43,7 @@ describe("generateNextjsScaffold — file map keys", () => {
       "README.md",
       "next.config.ts",
       "package.json",
+      "public/.gitkeep",
       "src/__tests__/app.test.ts",
       "src/app/globals.css",
       "src/app/layout.tsx",
@@ -58,7 +59,10 @@ describe("generateNextjsScaffold — file map keys", () => {
     const files = scaffold();
     for (const [key, value] of Object.entries(files)) {
       expect(typeof value, `${key} should be a string`).toBe("string");
-      expect(value.length, `${key} should be non-empty`).toBeGreaterThan(0);
+      // public/.gitkeep is intentionally empty (sentinel file for Docker COPY)
+      if (key !== "public/.gitkeep") {
+        expect(value.length, `${key} should be non-empty`).toBeGreaterThan(0);
+      }
     }
   });
 });

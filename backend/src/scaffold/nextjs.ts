@@ -53,6 +53,10 @@ export function generateNextjsScaffold(params: {
     "src/__tests__/app.test.ts": appTestPlaceholder(name),
     ".gitignore": gitignore(),
     "README.md": readme({ name, github_owner, framework_repo }),
+    // public/ is required by the Dockerfile (COPY --from=builder /app/public ./public).
+    // Next.js does not create it automatically during build if no static assets exist.
+    // The .gitkeep ensures the directory exists so the Docker COPY succeeds.
+    "public/.gitkeep": "",
   };
 }
 
