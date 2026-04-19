@@ -492,6 +492,44 @@ describe("configureCloud — happy path (container-app)", () => {
     );
     expect(ficPosts).toHaveLength(0);
   });
+
+  it("treats 404 on FIC filter lookup as not-found and creates the FIC", async () => {
+    // Graph API sometimes returns 404 instead of { value: [] } when $filter finds no FIC
+    mockFetch.mockImplementation((url: string, opts?: { method?: string }) => {
+      const method = opts?.method ?? "GET";
+      const urlStr = String(url);
+      // FIC filter lookup returns 404 ("not found") instead of empty array
+      if (method === "GET" && urlStr.includes("federatedIdentityCredentials") && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: false, status: 404, text: () => Promise.resolve(JSON.stringify({ error: { code: "Request_ResourceNotFound", message: "Resource 'my-fic' does not exist" } })) });
+      }
+      if (method === "GET" && urlStr.includes("$filter")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ value: [] }) });
+      }
+      if (urlStr.includes("graph.microsoft.com/v1.0/applications") && method === "POST" && !urlStr.includes("federatedIdentity")) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "app-object-id", appId: "client-id-mock" }) });
+      }
+      if (urlStr.includes("servicePrincipals") && method === "POST") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ id: "sp-object-id-mock" }) });
+      }
+      if (urlStr.includes("federatedIdentityCredentials") && method === "POST") {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+      }
+      if (urlStr.includes("roleAssignments") && method === "PUT") {
+        return Promise.resolve({ ok: true, status: 201, json: () => Promise.resolve({}) });
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+    });
+
+    const result = await configureCloud(validParams) as Record<string, unknown>;
+    expect(result.status).toBe("provisioned");
+
+    // FIC POST should have been called (3 × one per environment)
+    const calls = mockFetch.mock.calls as Array<[string, { method?: string }]>;
+    const ficPosts = calls.filter(
+      ([url, opts]) => String(url).includes("federatedIdentityCredentials") && opts?.method === "POST"
+    );
+    expect(ficPosts).toHaveLength(3);
+  });
 });
 
 describe("configureCloud — error propagation", () => {

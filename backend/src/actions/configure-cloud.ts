@@ -444,15 +444,19 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
       }
 
       // --- Federated credential (idempotent: look up by name before creating) ---
+      // Note: Graph API may return 404 instead of { value: [] } when no FIC matches
+      // the $filter — treat 404 as "not found" rather than a hard error.
       const existingFicsRes = await fetch(
         `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials?$filter=name eq '${ficName}'`,
         { headers: graphHeaders }
       );
-      if (!existingFicsRes.ok) {
+      if (!existingFicsRes.ok && existingFicsRes.status !== 404) {
         const err = await existingFicsRes.text();
         throw new Error(`Graph API: failed to look up federated credential for ${env}: ${err}`);
       }
-      const existingFics = await existingFicsRes.json() as { value: unknown[] };
+      const existingFics = existingFicsRes.ok
+        ? (await existingFicsRes.json() as { value: unknown[] })
+        : { value: [] };
 
       if (existingFics.value.length === 0) {
         const ficRes = await fetch(
@@ -641,15 +645,19 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
     }
 
     // --- Federated credential (idempotent: look up by name before creating) ---
+    // Note: Graph API may return 404 instead of { value: [] } when no FIC matches
+    // the $filter — treat 404 as "not found" rather than a hard error.
     const existingFicsRes = await fetch(
       `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials?$filter=name eq '${ficName}'`,
       { headers: graphHeaders }
     );
-    if (!existingFicsRes.ok) {
+    if (!existingFicsRes.ok && existingFicsRes.status !== 404) {
       const err = await existingFicsRes.text();
       throw new Error(`Graph API: failed to look up federated credential for ${env}: ${err}`);
     }
-    const existingFics = await existingFicsRes.json() as { value: unknown[] };
+    const existingFics = existingFicsRes.ok
+      ? (await existingFicsRes.json() as { value: unknown[] })
+      : { value: [] };
 
     if (existingFics.value.length === 0) {
       const ficRes = await fetch(
