@@ -43,13 +43,10 @@ on:
         description: "Application build command"
         type: string
         default: "npm run build"
-    secrets:
-      AZURE_CLIENT_ID:
-        required: true
-      AZURE_TENANT_ID:
-        required: true
-      AZURE_SUBSCRIPTION_ID:
-        required: true
+    # Note: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID are NOT
+    # declared here. They are environment-scoped secrets in the calling repo
+    # (scoped to the "staging" environment). The reusable workflow's jobs
+    # access them directly via `environment: staging`.
     outputs:
       staging_url:
         description: "HTTPS URL of the staging environment"

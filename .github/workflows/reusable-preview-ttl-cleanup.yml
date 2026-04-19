@@ -45,13 +45,10 @@ on:
         description: "Delete preview apps and images older than this many days (default: 7)"
         type: number
         default: 7
-    secrets:
-      AZURE_CLIENT_ID:
-        required: true
-      AZURE_TENANT_ID:
-        required: true
-      AZURE_SUBSCRIPTION_ID:
-        required: true
+    # Note: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID are NOT
+    # declared here. They are environment-scoped secrets in the calling repo
+    # (scoped to the "preview" environment). The reusable workflow's jobs
+    # access them directly via `environment: preview`.
 
 jobs:
   # ---------------------------------------------------------------------------
