@@ -407,13 +407,32 @@ describe("configureCloud — happy path (container-app)", () => {
     expect(subjects).toContain("repo:owner/my-app:environment:production");
   });
 
-  it("assigns Contributor and AcrPush roles × 3 each (6 role assignments total)", async () => {
+  it("assigns Contributor × 3 + AcrPush × 3 + User Access Admin for preview = 7 role assignments", async () => {
     await configureCloud(validParams);
     const calls = mockFetch.mock.calls as Array<[string, { method?: string }]>;
     const roleCalls = calls.filter(
       ([url, opts]) => String(url).includes("roleAssignments") && opts?.method === "PUT"
     );
-    expect(roleCalls).toHaveLength(6);
+    // 3 Contributor (one per env) + 3 AcrPush (one per env) + 1 User Access Admin (preview only)
+    expect(roleCalls).toHaveLength(7);
+  });
+
+  it("assigns User Access Administrator on ACR for preview environment only", async () => {
+    await configureCloud(validParams);
+    const calls = mockFetch.mock.calls as Array<[string, { method?: string }]>;
+    const uaaCalls = calls.filter(
+      ([url, opts]) =>
+        String(url).includes("roleAssignments") &&
+        opts?.method === "PUT" &&
+        // User Access Administrator role definition ID
+        JSON.parse((opts as { body?: string }).body ?? "{}").properties?.roleDefinitionId?.includes(
+          "18d7d88d-d35e-4fb5-a5c3-7773c20a72d9"
+        )
+    );
+    // Should be exactly 1 (preview only, not staging or production)
+    expect(uaaCalls).toHaveLength(1);
+    // Must be scoped to the ACR resource, not the resource group
+    expect(String(uaaCalls[0][0])).toContain("Microsoft.ContainerRegistry/registries");
   });
 
   it("uses the provided azure_region when overriding the default", async () => {
