@@ -61,6 +61,27 @@ export BACKEND_APP_NAME="$BACKEND_APP_NAME"
 export REGISTRY_NAME="$REGISTRY_NAME"
 EOF
 
+echo "→ Granting Application.ReadWrite.All to backend managed identity"
+# The configure_cloud backend action calls the Microsoft Graph REST API to create
+# Azure AD app registrations, service principals, and OIDC federated credentials.
+# The managed identity must be granted the Application.ReadWrite.All app role on
+# Microsoft Graph so those calls succeed.
+#
+# We post to the Graph service principal's appRoleAssignedTo collection rather than
+# to the managed identity SP directly because both are equivalent, but this form
+# reads: "grant vibe-backend the Application.ReadWrite.All role on Microsoft Graph."
+GRAPH_SP_ID=$(az ad sp show --id 00000003-0000-0000-c000-000000000000 --query id -o tsv)
+# Application.ReadWrite.All app role on Microsoft Graph (stable across all tenants)
+APP_ROLE_WRITE_ALL="1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9"
+az rest --method POST \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${GRAPH_SP_ID}/appRoleAssignedTo" \
+  --body "{
+    \"principalId\": \"${BACKEND_PRINCIPAL_ID}\",
+    \"resourceId\": \"${GRAPH_SP_ID}\",
+    \"appRoleId\": \"${APP_ROLE_WRITE_ALL}\"
+  }" \
+  --output none 2>&1 | grep -v "^$" || echo "   (already assigned — skipping)"
+
 echo "→ Staging infrastructure files into backend/ for Docker build context"
 # The Dockerfile build context is backend/. Infrastructure ARM templates live at
 # the repo root and cannot be referenced via ../infrastructure/ inside Docker.
