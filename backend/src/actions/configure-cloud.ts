@@ -1,30 +1,316 @@
 import { z } from "zod";
+import { createHash } from "crypto";
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+import { DefaultAzureCredential } from "@azure/identity";
+import { ResourceManagementClient } from "@azure/arm-resources";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+// Compiled ARM JSON lives one level up from the compiled action file.
+// At runtime:  dist/actions/configure-cloud.js  → ../infrastructure = dist/infrastructure/
+//              dist/infrastructure/ is populated by the `postbuild` npm script, which is
+//              run automatically by `npm run build` and by the Docker builder stage.
+// In dev mode: src/actions/configure-cloud.ts  → ../infrastructure = src/infrastructure/
+//              populated by the `predev` npm script before `tsx watch` starts.
+const INFRA_DIR = join(__dirname, "../infrastructure");
 
 const ConfigureCloudParams = z.object({
-  project_name: z.string(),
+  project_name: z.string().min(1),
   github_repo: z.string().regex(/^[^/]+\/[^/]+$/, "Must be owner/repo format"),
+  azure_subscription_id: z.string().min(1),
   azure_region: z.string().default("eastus2"),
   adapter: z.enum(["container-app", "static-web-app"]).default("container-app"),
 });
 
+const GITHUB_ENVIRONMENTS = ["preview", "staging", "production"] as const;
+const CONTRIBUTOR_ROLE_ID = "b24988ac-6180-42a0-ab88-20f7382dd24c";
+const ACR_PUSH_ROLE_ID = "8311e382-0749-4cb8-b61a-304f252e45ec";
+const ARM_API = "https://management.azure.com";
+const GRAPH_API = "https://graph.microsoft.com";
+const ROLE_ASSIGNMENT_API_VERSION = "2022-04-01";
+
+/**
+ * deterministicGuid
+ *
+ * Produces a deterministic UUID-like string from one or more input parts.
+ * Used for ARM role assignment names, which must be stable GUIDs so that
+ * re-running the action does not create duplicate role assignments.
+ */
+function deterministicGuid(...parts: string[]): string {
+  const hash = createHash("sha256").update(parts.join("|")).digest("hex");
+  return [
+    hash.slice(0, 8),
+    hash.slice(8, 12),
+    hash.slice(12, 16),
+    hash.slice(16, 20),
+    hash.slice(20, 32),
+  ].join("-");
+}
+
+/**
+ * getTenantIdFromToken
+ *
+ * Extracts the tenant ID (tid claim) from a raw Azure AD JWT access token.
+ * Used to return the tenant ID from configure_cloud without a separate API call.
+ */
+function getTenantIdFromToken(token: string): string {
+  const payload = token.split(".")[1] ?? "";
+  const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Record<string, unknown>;
+  return (decoded.tid as string) ?? "";
+}
+
+/**
+ * pollArmLro
+ *
+ * Polls an ARM `Azure-AsyncOperation` status-monitor URL until the operation reaches
+ * a terminal state. The status-monitor always returns JSON with a `status` field:
+ * `"Running"` | `"InProgress"` → continue polling
+ * `"Succeeded"` → resolve
+ * `"Failed"` | `"Canceled"` → throw
+ *
+ * Do NOT use this for `Location` header URLs — those use HTTP status codes, not JSON
+ * status bodies. Use `pollArmLocation` for `Location` URLs.
+ *
+ * Polls every `pollIntervalMs` ms (default 5s) up to `timeoutMs` (default 10 min).
+ * @throws if the operation fails, is canceled, the HTTP call fails, or the poll times out.
+ */
+export async function pollArmLro(
+  asyncOpUrl: string,
+  armToken: string,
+  timeoutMs = 600_000,
+  pollIntervalMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const res = await fetch(asyncOpUrl, {
+      headers: { Authorization: `Bearer ${armToken}` },
+    });
+    if (!res.ok) {
+      throw new Error(`ARM LRO poll failed: HTTP ${res.status} from ${asyncOpUrl}`);
+    }
+    const body = await res.json() as { status: string; error?: { message?: string } };
+    if (body.status === "Succeeded") return;
+    if (body.status === "Failed" || body.status === "Canceled") {
+      throw new Error(
+        `ARM LRO ${body.status}: ${body.error?.message ?? "(no error message)"} — ${asyncOpUrl}`
+      );
+    }
+    // "Running" / "InProgress" — continue polling
+  }
+  throw new Error(`ARM LRO timed out after ${timeoutMs / 1000}s — ${asyncOpUrl}`);
+}
+
+/**
+ * pollArmLocation
+ *
+ * Polls an ARM `Location` redirect URL until the operation completes.
+ * Location polling uses HTTP status codes, not a JSON status body:
+ * `202 Accepted` → operation still running, continue polling
+ * `200 OK` or `204 No Content` → operation succeeded, return
+ * Any other status → operation failed, throw
+ *
+ * Do NOT use this for `Azure-AsyncOperation` URLs — those return JSON status bodies.
+ * Use `pollArmLro` for `Azure-AsyncOperation` URLs.
+ *
+ * Polls every `pollIntervalMs` ms (default 5s) up to `timeoutMs` (default 10 min).
+ * @throws if the operation fails or the poll times out.
+ */
+export async function pollArmLocation(
+  locationUrl: string,
+  armToken: string,
+  timeoutMs = 600_000,
+  pollIntervalMs = 5_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const res = await fetch(locationUrl, {
+      headers: { Authorization: `Bearer ${armToken}` },
+    });
+    if (res.status === 200 || res.status === 204) return; // success
+    if (res.status === 202) continue; // still running
+    throw new Error(`ARM Location poll failed: HTTP ${res.status} from ${locationUrl}`);
+  }
+  throw new Error(`ARM Location poll timed out after ${timeoutMs / 1000}s — ${locationUrl}`);
+}
+
+/**
+ * setContainerAppRegistry
+ *
+ * PATCHes the registry configuration onto one or more Container Apps after the
+ * initial ARM deployment completes. Called separately from the Bicep deployment
+ * because setting `registries: [{identity: "system"}]` in the same deployment
+ * as the AcrPull role assignment consistently triggers "Operation expired" — Azure
+ * attempts managed-identity registry auth before the RBAC assignment propagates.
+ *
+ * The PATCH body includes `location` (the Azure region) because the Container Apps
+ * Update API schema requires it. Omitting `location` causes an ARM validation error
+ * before the LRO can start.
+ *
+ * The Container Apps Update API is an ARM Long-Running Operation with two possible
+ * async response shapes:
+ * - `200 OK` — synchronous success (Azure completed immediately)
+ * - `202 Accepted` with `Azure-AsyncOperation` header → JSON status-monitor polling
+ *   via `pollArmLro()` (`{status: "Running"|"Succeeded"|"Failed"}`)
+ * - `202 Accepted` with `Location` header only → HTTP-status polling via
+ *   `pollArmLocation()` (`202` = still running, `200`/`204` = done)
+ *
+ * Retries the PATCH up to 5 times with increasing delays (30 → 60 → 90 → 120 → 120 s)
+ * to give the AcrPull role assignment time to propagate across Azure's RBAC infrastructure.
+ * Throws on the final attempt if all retries fail.
+ */
+export async function setContainerAppRegistry({
+  appNames,
+  resourceGroupName,
+  subscriptionId,
+  location,
+  acrLoginServer,
+  armToken,
+  _pollIntervalMs = 5_000,
+  _retryDelays = [30_000, 60_000, 90_000, 120_000, 120_000],
+}: {
+  appNames: string[];
+  resourceGroupName: string;
+  subscriptionId: string;
+  /** Azure region of the Container Apps — required by the PATCH body (ARM schema). */
+  location: string;
+  acrLoginServer: string;
+  armToken: string;
+  /** Override LRO poll interval (ms) — for testing only, do not set in production. */
+  _pollIntervalMs?: number;
+  /** Override retry delays (ms) between PATCH attempts — for testing only. */
+  _retryDelays?: number[];
+}): Promise<void> {
+  const delays = _retryDelays;
+  // `location` is a required field in the Container Apps Update PATCH body (ARM schema).
+  // Omitting it causes a validation error before the LRO can begin.
+  const registryPatch = {
+    location,
+    properties: {
+      configuration: {
+        registries: [{ server: acrLoginServer, identity: "system" }],
+      },
+    },
+  };
+
+  for (const appName of appNames) {
+    const url =
+      `${ARM_API}/subscriptions/${subscriptionId}/resourceGroups/${resourceGroupName}` +
+      `/providers/Microsoft.App/containerApps/${appName}?api-version=2023-05-01`;
+
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt < delays.length; attempt++) {
+      if (attempt > 0) {
+        console.log(
+          `[configure_cloud] Registry PATCH for ${appName} — attempt ${attempt + 1}/${delays.length}, ` +
+          `waiting ${delays[attempt - 1]! / 1000}s for RBAC propagation...`
+        );
+        await new Promise(resolve => setTimeout(resolve, delays[attempt - 1]!));
+      }
+
+      const res = await fetch(url, {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${armToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify(registryPatch),
+      });
+
+      if (res.status === 202) {
+        // ARM Long-Running Operation — dispatch to the correct poller based on which
+        // async header the API returned:
+        //   Azure-AsyncOperation → JSON status-monitor polling via pollArmLro()
+        //   Location (only)      → HTTP-status polling via pollArmLocation()
+        const asyncOpUrl = res.headers.get("Azure-AsyncOperation");
+        const locationUrl = res.headers.get("Location");
+        if (!asyncOpUrl && !locationUrl) {
+          lastError = new Error(
+            `ARM PATCH for ${appName} returned 202 but no Azure-AsyncOperation or Location header`
+          );
+          console.warn(`[configure_cloud] ${lastError.message}`);
+          continue;
+        }
+        try {
+          if (asyncOpUrl) {
+            await pollArmLro(asyncOpUrl, armToken, 600_000, _pollIntervalMs);
+          } else {
+            await pollArmLocation(locationUrl!, armToken, 600_000, _pollIntervalMs);
+          }
+          console.log(`[configure_cloud] Registry wired successfully for ${appName} (LRO completed)`);
+          lastError = undefined;
+          break;
+        } catch (lroErr: unknown) {
+          lastError = new Error(
+            `ARM registry LRO for ${appName} failed (attempt ${attempt + 1}): ${String(lroErr)}`
+          );
+          console.warn(`[configure_cloud] ${lastError.message}`);
+          continue;
+        }
+      }
+
+      if (res.ok) {
+        // 200 — synchronous success
+        console.log(`[configure_cloud] Registry wired successfully for ${appName}`);
+        lastError = undefined;
+        break;
+      }
+
+      const body = await res.text();
+      lastError = new Error(
+        `ARM PATCH registry for ${appName} failed (attempt ${attempt + 1}): HTTP ${res.status} — ${body}`
+      );
+      console.warn(`[configure_cloud] ${lastError.message}`);
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+  }
+}
+
 /**
  * configureCloud
  *
- * Provisions Azure infrastructure for a project using the Bicep templates in
- * `infrastructure/`. Creates a dedicated resource group, Container Apps environment,
- * staging and production apps, and OIDC federated credentials so GitHub Actions
- * can deploy without long-lived secrets.
+ * Provisions the Azure infrastructure needed for a generated project to deploy
+ * via GitHub Actions OIDC (no stored secrets). Must be called after
+ * `create_project` has already run. `configure_repo` should be called after
+ * this action to store the returned outputs as GitHub environment secrets.
  *
- * Does NOT deploy the application — it only provisions the Azure target environments.
- * Does NOT create or configure the GitHub repository — use `configureRepo` for that.
- * Does NOT write any files to the project repo.
+ * What it does:
+ * - Creates a dedicated resource group: `{project_name}-rg`
+ * - Deploys `infrastructure/container-apps-env.json` (pre-compiled ARM template) —
+ *   Container Apps environment, ACR, staging and production Container Apps
+ * - For each GitHub Actions environment (preview, staging, production):
+ *   - Creates an Azure AD app registration via Microsoft Graph API (idempotent:
+ *     looks up by uniqueName before creating — safe to retry after partial failures)
+ *   - Creates a service principal for the app (idempotent: looks up by appId)
+ *   - Adds an OIDC federated credential linking the app to the GitHub environment
+ *     (idempotent: looks up by name before creating)
+ *   - Grants Contributor on the resource group and AcrPush on ACR via ARM REST API
+ *     (idempotent: deterministic GUID names, 409 Conflict treated as success)
+ * - Returns Azure outputs (clientIds, tenantId, ACR login server, FQDNs) for
+ *   the caller to pass to `configure_repo` for GitHub secret storage
  *
- * @param params - Must match `ConfigureCloudParams` schema:
- *   - `project_name` (string, required)
- *   - `github_repo` (string, required, `owner/repo` format)
- *   - `azure_region` (string, optional, default `"eastus2"`)
- *   - `adapter` (`"container-app" | "static-web-app"`, optional, default `"container-app"`)
- * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
+ * For the static-web-app adapter: does NOT return a deployment token. The SWA
+ * deployment token is fetched at runtime by `reusable-swa-*.yml` workflows via
+ * `az staticwebapp secrets list` after OIDC login — it is never stored as a secret.
+ *
+ * Why Graph API (not Bicep) for OIDC resources:
+ * The `microsoftGraph` Bicep extension used by `infrastructure/oidc-federated-credential.bicep`
+ * was retired in Bicep 0.31. Azure AD app registrations, service principals, and
+ * federated credentials must now be created via the Microsoft Graph REST API directly.
+ * ARM role assignments (Contributor, AcrPush) are still applied via the ARM REST API.
+ *
+ * What it does NOT do:
+ * - Store GitHub environment secrets (caller passes outputs to configure_repo)
+ * - Deploy the application (GitHub Actions owns that)
+ *
+ * Azure auth: DefaultAzureCredential — managed identity when deployed to
+ * Container Apps, az login credentials for local development.
+ *
+ * @param params - Must match `ConfigureCloudParams` schema
+ * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400)
+ * @throws Azure or Graph API errors if provisioning fails
  */
 export async function configureCloud(params: Record<string, unknown>): Promise<unknown> {
   const parsed = ConfigureCloudParams.safeParse(params);
@@ -32,13 +318,422 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
     throw new Error(`Invalid params: ${JSON.stringify(parsed.error.issues)}`);
   }
 
-  const _config = parsed.data;
+  const { project_name, github_repo, azure_subscription_id, azure_region, adapter } = parsed.data;
 
-  // TODO: create resource group via Azure CLI or ARM
-  // TODO: deploy container-apps-env.bicep for project-scoped environment
-  // TODO: create staging Container App
-  // TODO: create production Container App
-  // TODO: create OIDC federated credentials on service principal
-  // TODO: output resource IDs and URLs for use by configure_repo
-  return { status: "not_implemented" };
+  const [githubOrg, githubRepoName] = github_repo.split("/");
+  const resourceGroupName = `${project_name}-rg`;
+
+  const credential = new DefaultAzureCredential();
+  const armClient = new ResourceManagementClient(credential, azure_subscription_id);
+
+  // Acquire tokens for ARM and Graph API up front.
+  const [armTokenResponse, graphTokenResponse] = await Promise.all([
+    credential.getToken(`${ARM_API}/.default`),
+    credential.getToken(`${GRAPH_API}/.default`),
+  ]);
+
+  const armToken = armTokenResponse.token;
+  const graphToken = graphTokenResponse.token;
+  const tenantId = getTenantIdFromToken(graphToken);
+
+  const armHeaders = {
+    Authorization: `Bearer ${armToken}`,
+    "Content-Type": "application/json",
+  };
+  const graphHeaders = {
+    Authorization: `Bearer ${graphToken}`,
+    "Content-Type": "application/json",
+  };
+
+  // 1. Create resource group (idempotent)
+  await armClient.resourceGroups.createOrUpdate(resourceGroupName, {
+    location: azure_region,
+    tags: { "vibe-framework": "true", project: project_name },
+  });
+
+  const resourceGroupId = `/subscriptions/${azure_subscription_id}/resourceGroups/${resourceGroupName}`;
+
+  if (adapter === "static-web-app") {
+    // --- Static Web App path ---
+    // Deploy static-web-app.json ARM template (compiled from static-web-app.bicep).
+    const swaTemplate = JSON.parse(
+      readFileSync(join(INFRA_DIR, "static-web-app.json"), "utf-8")
+    ) as Record<string, unknown>;
+
+    const swaDeployment = await armClient.deployments.beginCreateOrUpdateAndWait(
+      resourceGroupName,
+      `${project_name}-swa-deploy`,
+      {
+        properties: {
+          mode: "Incremental",
+          template: swaTemplate,
+          parameters: {
+            appName: { value: project_name },
+            region: { value: azure_region },
+          },
+        },
+      }
+    );
+
+    const swaOutputs = (swaDeployment.properties?.outputs ?? {}) as Record<string, { value: string }>;
+    const swaHostname: string = swaOutputs.defaultHostname?.value ?? "";
+    const swaId: string = swaOutputs.swaId?.value ?? "";
+
+    // For each GitHub Actions environment: create an Azure AD app registration,
+    // service principal, and OIDC federated credential via the Microsoft Graph API,
+    // then assign Contributor on the resource group via ARM REST API.
+    // No ACR/AcrPush role assignment — SWA deployments use the deployment token.
+    const clientIds: Record<string, string> = {};
+
+    for (const env of GITHUB_ENVIRONMENTS) {
+      const appDisplayName = `${project_name}-github-${env}`;
+      const ficName = `${project_name}-${env}-fic`;
+
+      // --- App registration (idempotent: look up by uniqueName before creating) ---
+      const existingAppsRes = await fetch(
+        `${GRAPH_API}/v1.0/applications?$filter=uniqueName eq '${appDisplayName}'`,
+        { headers: graphHeaders }
+      );
+      if (!existingAppsRes.ok) {
+        const err = await existingAppsRes.text();
+        throw new Error(`Graph API: failed to look up app registration for ${env}: ${err}`);
+      }
+      const existingApps = await existingAppsRes.json() as { value: Array<Record<string, string>> };
+
+      let app: Record<string, string>;
+      if (existingApps.value.length > 0) {
+        app = existingApps.value[0];
+      } else {
+        const appRes = await fetch(`${GRAPH_API}/v1.0/applications`, {
+          method: "POST",
+          headers: graphHeaders,
+          body: JSON.stringify({ displayName: appDisplayName, uniqueName: appDisplayName }),
+        });
+        if (!appRes.ok) {
+          const err = await appRes.text();
+          throw new Error(`Graph API: failed to create app registration for ${env}: ${err}`);
+        }
+        app = await appRes.json() as Record<string, string>;
+      }
+
+      // --- Service principal (idempotent: look up by appId before creating) ---
+      const existingSPsRes = await fetch(
+        `${GRAPH_API}/v1.0/servicePrincipals?$filter=appId eq '${app.appId}'`,
+        { headers: graphHeaders }
+      );
+      if (!existingSPsRes.ok) {
+        const err = await existingSPsRes.text();
+        throw new Error(`Graph API: failed to look up service principal for ${env}: ${err}`);
+      }
+      const existingSPs = await existingSPsRes.json() as { value: Array<Record<string, string>> };
+
+      let sp: Record<string, string>;
+      if (existingSPs.value.length > 0) {
+        sp = existingSPs.value[0];
+      } else {
+        const spRes = await fetch(`${GRAPH_API}/v1.0/servicePrincipals`, {
+          method: "POST",
+          headers: graphHeaders,
+          body: JSON.stringify({ appId: app.appId }),
+        });
+        if (!spRes.ok) {
+          const err = await spRes.text();
+          throw new Error(`Graph API: failed to create service principal for ${env}: ${err}`);
+        }
+        sp = await spRes.json() as Record<string, string>;
+      }
+
+      // --- Federated credential (idempotent: look up by name before creating) ---
+      const existingFicsRes = await fetch(
+        `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials?$filter=name eq '${ficName}'`,
+        { headers: graphHeaders }
+      );
+      if (!existingFicsRes.ok) {
+        const err = await existingFicsRes.text();
+        throw new Error(`Graph API: failed to look up federated credential for ${env}: ${err}`);
+      }
+      const existingFics = await existingFicsRes.json() as { value: unknown[] };
+
+      if (existingFics.value.length === 0) {
+        const ficRes = await fetch(
+          `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials`,
+          {
+            method: "POST",
+            headers: graphHeaders,
+            body: JSON.stringify({
+              name: ficName,
+              issuer: "https://token.actions.githubusercontent.com",
+              subject: `repo:${githubOrg}/${githubRepoName}:environment:${env}`,
+              audiences: ["api://AzureADTokenExchange"],
+              description: `GitHub Actions OIDC trust for ${githubOrg}/${githubRepoName} ${env} environment`,
+            }),
+          }
+        );
+        if (!ficRes.ok) {
+          const err = await ficRes.text();
+          throw new Error(`Graph API: failed to create federated credential for ${env}: ${err}`);
+        }
+      }
+
+      // Assign Contributor role on the resource group (deterministic GUID = idempotent)
+      const contributorAssignmentName = deterministicGuid(resourceGroupId, sp.id, CONTRIBUTOR_ROLE_ID);
+      const contributorRes = await fetch(
+        `${ARM_API}${resourceGroupId}/providers/Microsoft.Authorization/roleAssignments/${contributorAssignmentName}?api-version=${ROLE_ASSIGNMENT_API_VERSION}`,
+        {
+          method: "PUT",
+          headers: armHeaders,
+          body: JSON.stringify({
+            properties: {
+              roleDefinitionId: `/subscriptions/${azure_subscription_id}/providers/Microsoft.Authorization/roleDefinitions/${CONTRIBUTOR_ROLE_ID}`,
+              principalId: sp.id,
+              principalType: "ServicePrincipal",
+            },
+          }),
+        }
+      );
+      // 409 Conflict = role assignment already exists — treat as success (idempotent)
+      if (!contributorRes.ok && contributorRes.status !== 409) {
+        const err = await contributorRes.text();
+        throw new Error(`ARM API: failed to assign Contributor for ${env}: ${err}`);
+      }
+
+      // No AcrPush assignment — SWA has no container registry.
+
+      clientIds[env] = app.appId;
+    }
+
+    return {
+      status: "provisioned",
+      project_name,
+      github_repo,
+      resource_group: resourceGroupName,
+      azure_region,
+      swa_hostname: swaHostname,
+      swa_id: swaId,
+      // deployment_token intentionally omitted — fetched at runtime by reusable-swa-*.yml
+      // workflows via `az staticwebapp secrets list` after OIDC login. No long-lived secret stored.
+      oidc_client_ids: clientIds,
+      tenant_id: tenantId,
+      subscription_id: azure_subscription_id,
+    };
+  }
+
+  // --- Container App path ---
+  const registryName = `${project_name.replace(/-/g, "")}acr`;
+  const stagingAppName = `${project_name}-staging`;
+  const productionAppName = `${project_name}-prod`;
+
+  // 2. Deploy container-apps-env ARM template (compiled from Bicep at build time).
+  //    Using pre-compiled JSON avoids requiring the Bicep CLI at runtime.
+  const containerAppsTemplate = JSON.parse(
+    readFileSync(join(INFRA_DIR, "container-apps-env.json"), "utf-8")
+  ) as Record<string, unknown>;
+
+  const containerAppsDeployment = await armClient.deployments.beginCreateOrUpdateAndWait(
+    resourceGroupName,
+    `${project_name}-env-deploy`,
+    {
+      properties: {
+        mode: "Incremental",
+        template: containerAppsTemplate,
+        parameters: {
+          appName: { value: project_name },
+          region: { value: azure_region },
+          registryName: { value: registryName },
+          stagingAppName: { value: stagingAppName },
+          productionAppName: { value: productionAppName },
+        },
+      },
+    }
+  );
+
+  const envOutputs = (containerAppsDeployment.properties?.outputs ?? {}) as Record<string, { value: string }>;
+  const acrLoginServer: string = envOutputs.acrLoginServer?.value ?? `${registryName}.azurecr.io`;
+  const acrId: string = envOutputs.acrId?.value ??
+    `/subscriptions/${azure_subscription_id}/resourceGroups/${resourceGroupName}/providers/Microsoft.ContainerRegistry/registries/${registryName}`;
+  const stagingFqdn: string = envOutputs.stagingFqdn?.value ?? "";
+  const productionFqdn: string = envOutputs.productionFqdn?.value ?? "";
+
+  // 2b. Wire ACR registry to staging and production Container Apps.
+  //
+  // The registries block is intentionally absent from the Bicep template (see
+  // container-apps-env.bicep). Setting it in the same ARM deployment as the AcrPull
+  // role assignment reliably triggers "Operation expired" — Azure tries to configure
+  // the managed-identity registry auth before the RBAC assignment has propagated.
+  //
+  // Fix: apply the registry config via a separate PATCH after the deployment completes,
+  // with a retry loop that backs off to allow RBAC propagation time.
+  await setContainerAppRegistry({
+    appNames: [stagingAppName, productionAppName],
+    resourceGroupName,
+    subscriptionId: azure_subscription_id,
+    location: azure_region,
+    acrLoginServer,
+    armToken,
+  });
+
+  // 3. For each GitHub Actions environment: create an Azure AD app registration,
+  //    service principal, and OIDC federated credential via the Microsoft Graph API,
+  //    then assign Contributor (resource group) and AcrPush (ACR) via ARM REST API.
+  //
+  //    Note: `infrastructure/oidc-federated-credential.bicep` used the retired
+  //    `microsoftGraph` Bicep extension (retired in Bicep 0.31). Azure AD resources
+  //    must now be created via the Microsoft Graph REST API directly, which this does.
+
+  const clientIds: Record<string, string> = {};
+
+  for (const env of GITHUB_ENVIRONMENTS) {
+    const appDisplayName = `${project_name}-github-${env}`;
+    const ficName = `${project_name}-${env}-fic`;
+
+    // --- App registration (idempotent: look up by uniqueName before creating) ---
+    const existingAppsRes = await fetch(
+      `${GRAPH_API}/v1.0/applications?$filter=uniqueName eq '${appDisplayName}'`,
+      { headers: graphHeaders }
+    );
+    if (!existingAppsRes.ok) {
+      const err = await existingAppsRes.text();
+      throw new Error(`Graph API: failed to look up app registration for ${env}: ${err}`);
+    }
+    const existingApps = await existingAppsRes.json() as { value: Array<Record<string, string>> };
+
+    let app: Record<string, string>;
+    if (existingApps.value.length > 0) {
+      app = existingApps.value[0];
+    } else {
+      const appRes = await fetch(`${GRAPH_API}/v1.0/applications`, {
+        method: "POST",
+        headers: graphHeaders,
+        body: JSON.stringify({ displayName: appDisplayName, uniqueName: appDisplayName }),
+      });
+      if (!appRes.ok) {
+        const err = await appRes.text();
+        throw new Error(`Graph API: failed to create app registration for ${env}: ${err}`);
+      }
+      app = await appRes.json() as Record<string, string>;
+    }
+
+    // --- Service principal (idempotent: look up by appId before creating) ---
+    const existingSPsRes = await fetch(
+      `${GRAPH_API}/v1.0/servicePrincipals?$filter=appId eq '${app.appId}'`,
+      { headers: graphHeaders }
+    );
+    if (!existingSPsRes.ok) {
+      const err = await existingSPsRes.text();
+      throw new Error(`Graph API: failed to look up service principal for ${env}: ${err}`);
+    }
+    const existingSPs = await existingSPsRes.json() as { value: Array<Record<string, string>> };
+
+    let sp: Record<string, string>;
+    if (existingSPs.value.length > 0) {
+      sp = existingSPs.value[0];
+    } else {
+      const spRes = await fetch(`${GRAPH_API}/v1.0/servicePrincipals`, {
+        method: "POST",
+        headers: graphHeaders,
+        body: JSON.stringify({ appId: app.appId }),
+      });
+      if (!spRes.ok) {
+        const err = await spRes.text();
+        throw new Error(`Graph API: failed to create service principal for ${env}: ${err}`);
+      }
+      sp = await spRes.json() as Record<string, string>;
+    }
+
+    // --- Federated credential (idempotent: look up by name before creating) ---
+    const existingFicsRes = await fetch(
+      `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials?$filter=name eq '${ficName}'`,
+      { headers: graphHeaders }
+    );
+    if (!existingFicsRes.ok) {
+      const err = await existingFicsRes.text();
+      throw new Error(`Graph API: failed to look up federated credential for ${env}: ${err}`);
+    }
+    const existingFics = await existingFicsRes.json() as { value: unknown[] };
+
+    if (existingFics.value.length === 0) {
+      const ficRes = await fetch(
+        `${GRAPH_API}/v1.0/applications/${app.id}/federatedIdentityCredentials`,
+        {
+          method: "POST",
+          headers: graphHeaders,
+          body: JSON.stringify({
+            name: ficName,
+            issuer: "https://token.actions.githubusercontent.com",
+            subject: `repo:${githubOrg}/${githubRepoName}:environment:${env}`,
+            audiences: ["api://AzureADTokenExchange"],
+            description: `GitHub Actions OIDC trust for ${githubOrg}/${githubRepoName} ${env} environment`,
+          }),
+        }
+      );
+      if (!ficRes.ok) {
+        const err = await ficRes.text();
+        throw new Error(`Graph API: failed to create federated credential for ${env}: ${err}`);
+      }
+    }
+
+    // Assign Contributor role on the resource group (deterministic GUID = idempotent)
+    const contributorAssignmentName = deterministicGuid(resourceGroupId, sp.id, CONTRIBUTOR_ROLE_ID);
+    const contributorRes = await fetch(
+      `${ARM_API}${resourceGroupId}/providers/Microsoft.Authorization/roleAssignments/${contributorAssignmentName}?api-version=${ROLE_ASSIGNMENT_API_VERSION}`,
+      {
+        method: "PUT",
+        headers: armHeaders,
+        body: JSON.stringify({
+          properties: {
+            roleDefinitionId: `/subscriptions/${azure_subscription_id}/providers/Microsoft.Authorization/roleDefinitions/${CONTRIBUTOR_ROLE_ID}`,
+            principalId: sp.id,
+            principalType: "ServicePrincipal",
+          },
+        }),
+      }
+    );
+    // 409 Conflict = role assignment already exists — treat as success (idempotent)
+    if (!contributorRes.ok && contributorRes.status !== 409) {
+      const err = await contributorRes.text();
+      throw new Error(`ARM API: failed to assign Contributor for ${env}: ${err}`);
+    }
+
+    // Assign AcrPush role on the ACR (deterministic GUID = idempotent)
+    const acrPushAssignmentName = deterministicGuid(acrId, sp.id, ACR_PUSH_ROLE_ID);
+    const acrPushRes = await fetch(
+      `${ARM_API}${acrId}/providers/Microsoft.Authorization/roleAssignments/${acrPushAssignmentName}?api-version=${ROLE_ASSIGNMENT_API_VERSION}`,
+      {
+        method: "PUT",
+        headers: armHeaders,
+        body: JSON.stringify({
+          properties: {
+            roleDefinitionId: `/subscriptions/${azure_subscription_id}/providers/Microsoft.Authorization/roleDefinitions/${ACR_PUSH_ROLE_ID}`,
+            principalId: sp.id,
+            principalType: "ServicePrincipal",
+          },
+        }),
+      }
+    );
+    if (!acrPushRes.ok && acrPushRes.status !== 409) {
+      const err = await acrPushRes.text();
+      throw new Error(`ARM API: failed to assign AcrPush for ${env}: ${err}`);
+    }
+
+    clientIds[env] = app.appId;
+  }
+
+  // Return Azure outputs for the caller to pass to configure_repo.
+  // configure_repo owns storing AZURE_CLIENT_ID, AZURE_TENANT_ID, and
+  // AZURE_SUBSCRIPTION_ID as GitHub environment secrets per DEPLOYMENT_CONTRACT.md.
+  return {
+    status: "provisioned",
+    project_name,
+    github_repo,
+    resource_group: resourceGroupName,
+    azure_region,
+    acr_login_server: acrLoginServer,
+    acr_id: acrId,
+    staging_fqdn: stagingFqdn,
+    production_fqdn: productionFqdn,
+    // Pass these to configure_repo to set as GitHub environment secrets:
+    oidc_client_ids: clientIds,      // { preview: "...", staging: "...", production: "..." }
+    tenant_id: tenantId,
+    subscription_id: azure_subscription_id,
+  };
 }

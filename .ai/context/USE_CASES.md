@@ -6,6 +6,8 @@ It is not a second `plan.md`. `plan.md` remains the architecture and implementat
 
 If implementation, issues, or PRs conflict with these journeys, this file and `plan.md` win.
 
+The concrete pass/fail checklist for proving these journeys as part of Phase 4 lives in `.ai/context/PHASE4_VALIDATION_RUNBOOK.md`.
+
 ## Experience Tiers
 
 ### Bootstrap tier
@@ -53,12 +55,13 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 1. The user invokes `create_project` from their provider app.
 2. The backend creates a new GitHub repository through the GitHub App.
 3. The backend scaffolds the selected template and writes the required framework files.
-4. The backend enables and validates Codespaces for the new repository.
-5. The backend provisions a dedicated Azure Container Apps environment for that project.
-6. The backend creates the project repo's GitHub environments, secrets, variables, and approval settings.
-7. The backend opens an initial bootstrap PR instead of writing directly to the default branch.
-8. GitHub Actions runs the preview workflow on that bootstrap PR.
-9. The backend posts preview status and supporting metadata back to the PR after workflow-driven deployment completes.
+4. The backend enables Codespaces for the new repository (best-effort; non-fatal if plan/org restrictions apply).
+5. The backend opens an initial bootstrap PR as soon as the scaffold branch is pushed — before any Azure provisioning — so failures leave a recoverable, reviewable GitHub surface. The action returns `{ repo_url, pr_url, pr_number, status: "provisioning" }` at this point.
+6. The backend runs `configure_cloud` and `configure_repo` asynchronously in the background (does not block the HTTP response or MCP tool return).
+7. Progress is posted as PR comments: "⏳ started", then either "✅ complete" with Azure outputs table or "❌ failed" with error details and retry instructions.
+8. On provisioning success: the PR body is updated with real Azure outputs (ACR, FQDNs, resource group). On failure: an error comment is posted to the PR — the error is NOT re-thrown. To retry, call `configure_cloud` + `configure_repo` directly.
+9. GitHub Actions runs the preview workflow on the bootstrap PR.
+10. The backend posts preview status and a screenshot back to the PR via `capture_preview` + `post_status` after workflow-driven deployment completes.
 
 ### Success outcome
 - A new project repo exists with a reviewable bootstrap PR.
@@ -76,19 +79,21 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 **Actor:** User importing an existing GitHub repository
 **Trigger:** Provider-tool `import_project` or `init.sh --import` after bootstrap prerequisites already exist
 
+**Current scope (Phase 3):** `import_project` supports **Next.js repos and empty/bare repos only**. The action validates the target repo before opening any PR: if `package.json` exists and `"next"` is absent from dependencies, it fails with a clear error. Empty repos (no `package.json`) proceed as Next.js targets — the caller is responsible for only passing repos that are or will become Next.js projects. Support for other stacks (Python, Ruby, Go, etc.) is deferred.
+
 ### Happy path
-1. The user selects an existing repository for adoption.
-2. The backend connects the repository through the GitHub App.
-3. The backend enables and validates Codespaces for the repository.
-4. The backend provisions a dedicated Azure Container Apps environment for the project.
-5. The backend creates the repo's GitHub environments, secrets, variables, and approval settings.
-6. The backend opens a bootstrap PR instead of modifying the default branch directly.
-7. That PR adds the framework adoption files plus only the minimum deployment-related changes needed.
+1. The user selects an existing Next.js (or empty) repository for adoption.
+2. The backend validates the repo is accessible and the stack is supported (Next.js detected or empty).
+3. The backend enables Codespaces for the repository (best-effort, non-fatal).
+4. The backend opens a bootstrap PR — before any Azure provisioning — so failures leave a visible, recoverable GitHub surface.
+5. The backend provisions a dedicated Azure Container Apps environment for the project.
+6. The backend creates the repo's GitHub environments, secrets, variables, and approval settings.
+7. That PR adds the framework adoption files plus only the minimum deployment-related changes needed; PR body is updated with Azure outputs on success, or an error comment is posted on failure.
 8. GitHub Actions runs the preview workflow on the bootstrap PR.
-9. The backend posts status and supporting metadata back to the PR after the workflow deploy completes.
+9. The `post-enrichment` job calls the backend to post a screenshot and status comment to the PR after the deploy completes.
 
 ### Success outcome
-- The existing repository is adoptable through a reviewable bootstrap PR.
+- The existing Next.js repository is adoptable through a reviewable bootstrap PR.
 - The repo gains framework structure without losing GitHub-centered review and approval.
 
 ### Guardrails / non-goals
@@ -96,6 +101,7 @@ If implementation, issues, or PRs conflict with these journeys, this file and `p
 - Avoid unrelated app refactors.
 - Only make application-code changes when required for deployability, and keep them clearly visible in the bootstrap PR.
 - This journey assumes the GitHub App, Azure trust, and backend remote MCP endpoint already exist from the bootstrap tier.
+- Non-Next.js repos with a detected stack (package.json without `"next"`) are rejected. Repos of other stacks with no package.json are not detected — callers must not pass them.
 
 ## Journey 4 — Implement A Feature Through Issue To Branch To PR To Preview
 

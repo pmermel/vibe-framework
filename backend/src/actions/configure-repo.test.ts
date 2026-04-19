@@ -41,7 +41,12 @@ function makeMockOctokit(overrides: Record<string, unknown> = {}) {
         data: { key: "fake-b64-key", key_id: "key123" },
       }),
       createOrUpdateEnvironmentSecret: vi.fn().mockResolvedValue({}),
+      getRepoPublicKey: vi.fn().mockResolvedValue({
+        data: { key: "fake-repo-b64-key", key_id: "repo-key123" },
+      }),
+      createOrUpdateRepoSecret: vi.fn().mockResolvedValue({}),
     },
+    request: vi.fn().mockResolvedValue({}),
     ...overrides,
   };
 }
@@ -539,5 +544,254 @@ describe("configureRepo — invalid params", () => {
     await expect(
       configureRepo({ github_repo: "owner/my-app", approvers: "alice" })
     ).rejects.toThrow("Invalid params:");
+  });
+});
+
+describe("configureRepo — azure_client_ids per-environment map", () => {
+  let mockOctokit: ReturnType<typeof makeMockOctokit>;
+
+  beforeEach(() => {
+    mockOctokit = makeMockOctokit();
+    (getGithubClient as ReturnType<typeof vi.fn>).mockReturnValue(mockOctokit);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sets distinct AZURE_CLIENT_ID per environment when azure_client_ids map is provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      azure_tenant_id: "tenant-abc",
+      azure_subscription_id: "sub-xyz",
+    })) as { azure_secrets_configured: boolean };
+
+    expect(result.azure_secrets_configured).toBe(true);
+
+    const calls = mockOctokit.actions.createOrUpdateEnvironmentSecret.mock.calls as Array<
+      [{ environment_name: string; secret_name: string; encrypted_value: string }]
+    >;
+
+    // Verify each environment gets its specific AZURE_CLIENT_ID (encryption makes value opaque,
+    // but we can verify createOrUpdateEnvironmentSecret is called for each env with that secret name)
+    const clientIdCalls = calls.filter(([args]) => args.secret_name === "AZURE_CLIENT_ID");
+    expect(clientIdCalls).toHaveLength(3);
+
+    const envNames = clientIdCalls.map(([args]) => args.environment_name);
+    expect(envNames).toContain("preview");
+    expect(envNames).toContain("staging");
+    expect(envNames).toContain("production");
+  });
+
+  it("sets AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID identically on all environments", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      azure_tenant_id: "tenant-abc",
+      azure_subscription_id: "sub-xyz",
+    });
+
+    const calls = mockOctokit.actions.createOrUpdateEnvironmentSecret.mock.calls as Array<
+      [{ environment_name: string; secret_name: string }]
+    >;
+
+    for (const env of ["preview", "staging", "production"]) {
+      const envCalls = calls.filter(([args]) => args.environment_name === env);
+      const secretNames = envCalls.map(([args]) => args.secret_name);
+      expect(secretNames).toContain("AZURE_TENANT_ID");
+      expect(secretNames).toContain("AZURE_SUBSCRIPTION_ID");
+    }
+  });
+
+  it("makes 9 secret API calls (3 environments × 3 secrets) with the azure_client_ids map", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      azure_tenant_id: "tenant-abc",
+      azure_subscription_id: "sub-xyz",
+    });
+
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).toHaveBeenCalledTimes(9);
+  });
+
+  it("azure_client_ids map takes precedence over azure_client_id when both are provided", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      azure_client_id: "client-single-fallback",
+      azure_tenant_id: "tenant-abc",
+      azure_subscription_id: "sub-xyz",
+    });
+
+    // When the map is present it should be used — we still get 9 calls
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).toHaveBeenCalledTimes(9);
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment_name: "preview",
+        secret_name: "AZURE_CLIENT_ID",
+      })
+    );
+  });
+
+  it("returns azure_secrets_configured:false when azure_client_ids provided but tenant/sub missing", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_ids: {
+        preview: "client-preview-111",
+        staging: "client-staging-222",
+        production: "client-production-333",
+      },
+      // azure_tenant_id and azure_subscription_id omitted
+    })) as { azure_secrets_configured: boolean };
+
+    expect(result.azure_secrets_configured).toBe(false);
+    expect(mockOctokit.actions.createOrUpdateEnvironmentSecret).not.toHaveBeenCalled();
+  });
+});
+
+describe("configureRepo — VIBE_BACKEND_URL repo variable", () => {
+  let mockOctokit: ReturnType<typeof makeMockOctokit>;
+
+  beforeEach(() => {
+    mockOctokit = makeMockOctokit();
+    (getGithubClient as ReturnType<typeof vi.fn>).mockReturnValue(mockOctokit);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("creates VIBE_BACKEND_URL variable when backend_url is provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      backend_url: "https://vibe-backend.eastus2.azurecontainerapps.io",
+    })) as { backend_url_configured: boolean };
+
+    expect(result.backend_url_configured).toBe(true);
+    expect(mockOctokit.request).toHaveBeenCalledWith(
+      "POST /repos/{owner}/{repo}/actions/variables",
+      expect.objectContaining({
+        owner: "owner",
+        repo: "my-app",
+        name: "VIBE_BACKEND_URL",
+        value: "https://vibe-backend.eastus2.azurecontainerapps.io",
+      })
+    );
+  });
+
+  it("returns backend_url_configured: false when backend_url is not provided", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+    })) as { backend_url_configured: boolean };
+
+    expect(result.backend_url_configured).toBe(false);
+    expect(mockOctokit.request).not.toHaveBeenCalledWith(
+      "POST /repos/{owner}/{repo}/actions/variables",
+      expect.anything()
+    );
+  });
+
+  it("falls back to PATCH when VIBE_BACKEND_URL already exists (409)", async () => {
+    mockOctokit.request = vi
+      .fn()
+      .mockRejectedValueOnce({ status: 409 }) // POST → conflict
+      .mockResolvedValueOnce({}); // PATCH → success
+
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      backend_url: "https://vibe-backend.eastus2.azurecontainerapps.io",
+    })) as { backend_url_configured: boolean };
+
+    expect(result.backend_url_configured).toBe(true);
+    expect(mockOctokit.request).toHaveBeenCalledWith(
+      "PATCH /repos/{owner}/{repo}/actions/variables/{name}",
+      expect.objectContaining({
+        owner: "owner",
+        repo: "my-app",
+        name: "VIBE_BACKEND_URL",
+        value: "https://vibe-backend.eastus2.azurecontainerapps.io",
+      })
+    );
+  });
+
+  it("re-throws non-409 errors from the variable creation request", async () => {
+    mockOctokit.request = vi.fn().mockRejectedValue({ status: 403 });
+
+    await expect(
+      configureRepo({
+        github_repo: "owner/my-app",
+        approvers: ["alice"],
+        backend_url: "https://vibe-backend.eastus2.azurecontainerapps.io",
+      })
+    ).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("throws Invalid params when backend_url is not a valid URL", async () => {
+    await expect(
+      configureRepo({
+        github_repo: "owner/my-app",
+        approvers: ["alice"],
+        backend_url: "not-a-url",
+      })
+    ).rejects.toThrow("Invalid params:");
+  });
+});
+
+describe("configureRepo — no stored SWA deployment token", () => {
+  let mockOctokit: ReturnType<typeof makeMockOctokit>;
+
+  beforeEach(() => {
+    mockOctokit = makeMockOctokit();
+    (getGithubClient as ReturnType<typeof vi.fn>).mockReturnValue(mockOctokit);
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("never calls createOrUpdateRepoSecret (SWA token is fetched at runtime, not stored)", async () => {
+    await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+      azure_client_id: "client-abc",
+      azure_tenant_id: "tenant-xyz",
+      azure_subscription_id: "sub-123",
+    });
+
+    expect(mockOctokit.actions.createOrUpdateRepoSecret).not.toHaveBeenCalled();
+  });
+
+  it("return value does not include swa_token_configured field", async () => {
+    const result = (await configureRepo({
+      github_repo: "owner/my-app",
+      approvers: ["alice"],
+    })) as Record<string, unknown>;
+
+    expect(result).not.toHaveProperty("swa_token_configured");
   });
 });

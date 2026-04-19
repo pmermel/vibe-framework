@@ -1,5 +1,38 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createProject } from "./create-project.js";
+
+/**
+ * Flushes the setImmediate background task started by createProject.
+ * createProject returns immediately after opening the PR, then kicks off
+ * configureCloud + configureRepo in a setImmediate callback. Tests that
+ * assert on those calls must await this helper first.
+ */
+const flushBackground = async () => {
+  await new Promise<void>(resolve => setImmediate(resolve));
+  // Drain microtasks for all awaits inside provisionInBackground
+  for (let i = 0; i < 20; i++) {
+    await Promise.resolve();
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Mock configure-cloud and configure-repo before importing createProject.
+// vi.mock factories are hoisted to the top of the file before any variable
+// declarations, so we use vi.hoisted() to create references that are available
+// at hoist time and in the rest of the test file.
+// ---------------------------------------------------------------------------
+
+const { mockConfigureCloud, mockConfigureRepo } = vi.hoisted(() => ({
+  mockConfigureCloud: vi.fn(),
+  mockConfigureRepo: vi.fn(),
+}));
+
+vi.mock("./configure-cloud.js", () => ({
+  configureCloud: mockConfigureCloud,
+}));
+
+vi.mock("./configure-repo.js", () => ({
+  configureRepo: mockConfigureRepo,
+}));
 
 // ---------------------------------------------------------------------------
 // Mock github-client so tests never make real API calls
@@ -24,16 +57,81 @@ const mockOctokit = {
   },
   pulls: {
     create: vi.fn(),
+    update: vi.fn(),
   },
+  issues: {
+    createComment: vi.fn(),
+  },
+  request: vi.fn(),
 };
 
 vi.mock("../lib/github-client.js", () => ({
   getGithubClient: () => mockOctokit,
 }));
 
+import { createProject } from "./create-project.js";
+
+// ---------------------------------------------------------------------------
+// Global env var management
+// Set AZURE_SUBSCRIPTION_ID for all tests so the subscription-resolution
+// path doesn't throw by default. Individual tests that want to test the
+// "not set" path must delete and restore it themselves.
+// ---------------------------------------------------------------------------
+
+const ORIGINAL_ENV = { ...process.env };
+
+beforeEach(() => {
+  process.env.AZURE_SUBSCRIPTION_ID = "default-sub-123";
+});
+
+afterEach(() => {
+  // Restore env to whatever it was before each test
+  Object.keys(process.env).forEach((key) => {
+    if (!(key in ORIGINAL_ENV)) delete process.env[key];
+  });
+  Object.assign(process.env, ORIGINAL_ENV);
+});
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const defaultCloudOutputs = {
+  status: "provisioned",
+  project_name: "my-app",
+  github_repo: "acme/my-app",
+  resource_group: "my-app-rg",
+  azure_region: "eastus2",
+  acr_login_server: "myappackr.azurecr.io",
+  acr_id: "/subscriptions/sub-123/resourceGroups/my-app-rg/providers/Microsoft.ContainerRegistry/registries/myappackr",
+  staging_fqdn: "my-app-staging.eastus2.azurecontainerapps.io",
+  production_fqdn: "my-app-prod.eastus2.azurecontainerapps.io",
+  oidc_client_ids: {
+    preview: "client-preview-123",
+    staging: "client-staging-456",
+    production: "client-production-789",
+  },
+  tenant_id: "tenant-abc",
+  subscription_id: "sub-123",
+};
+
+const swaCloudOutputs = {
+  status: "provisioned",
+  project_name: "my-site",
+  github_repo: "acme/my-site",
+  resource_group: "my-site-rg",
+  azure_region: "eastus2",
+  swa_hostname: "gentle-wave-abc.azurestaticapps.net",
+  swa_id: "/subscriptions/sub-123/resourceGroups/my-site-rg/providers/Microsoft.Web/staticSites/my-site-swa",
+  // deployment_token intentionally absent — fetched at runtime by reusable-swa-*.yml workflows
+  oidc_client_ids: {
+    preview: "client-preview-111",
+    staging: "client-staging-222",
+    production: "client-production-333",
+  },
+  tenant_id: "tenant-abc",
+  subscription_id: "sub-123",
+};
 
 function setupHappyPath(ownerType: "User" | "Organization" = "User", login = "acme") {
   mockOctokit.users.getByUsername.mockResolvedValue({ data: { type: ownerType } });
@@ -78,6 +176,18 @@ function setupHappyPath(ownerType: "User" | "Organization" = "User", login = "ac
       number: 1,
     },
   });
+
+  mockOctokit.pulls.update.mockResolvedValue({});
+  mockOctokit.issues.createComment.mockResolvedValue({
+    data: { id: 999, html_url: "https://github.com/acme/my-app/pull/1#issuecomment-999" },
+  });
+
+  // Codespaces API — succeed by default
+  mockOctokit.request.mockResolvedValue({});
+
+  // configure-cloud and configure-repo — succeed by default with realistic outputs
+  mockConfigureCloud.mockResolvedValue(defaultCloudOutputs);
+  mockConfigureRepo.mockResolvedValue({ configured: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +208,7 @@ describe("createProject — nextjs happy path (user owner)", () => {
       approvers: ["alice"],
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       repo_url: "https://github.com/acme/my-app",
       pr_url: "https://github.com/acme/my-app/pull/1",
       pr_number: 1,
@@ -203,6 +313,37 @@ describe("createProject — nextjs happy path (user owner)", () => {
       })
     ).rejects.toThrow('github_owner "acme" does not match the authenticated user "other-user"');
   });
+
+  it("creates develop branch (from scaffold commit SHA) and bootstrap branch (from same commit SHA) via two createRef calls", async () => {
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+
+    // createRef must be called exactly twice: once for develop, once for bootstrap/vibe-setup
+    expect(mockOctokit.git.createRef).toHaveBeenCalledTimes(2);
+
+    // First call: develop branch pointing at the scaffold commit SHA (not the empty init commit)
+    // so develop already contains the generated project from day one.
+    expect(mockOctokit.git.createRef).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        ref: "refs/heads/develop",
+        sha: "commit-sha",
+      })
+    );
+
+    // Second call: bootstrap branch pointing at the same scaffold commit SHA
+    expect(mockOctokit.git.createRef).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        ref: "refs/heads/bootstrap/vibe-setup",
+        sha: "commit-sha",
+      })
+    );
+  });
 });
 
 describe("createProject — nextjs happy path (org owner)", () => {
@@ -235,33 +376,35 @@ describe("createProject — unimplemented template/adapter combos", () => {
     vi.clearAllMocks();
   });
 
-  it("returns not_implemented for react-vite (Phase 4 deferred)", async () => {
-    const result = await createProject({
-      name: "my-app",
-      template: "react-vite",
-      github_owner: "acme",
-      approvers: ["alice"],
-    });
-    expect(result).toEqual({ status: "not_implemented" });
-    expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
-  });
-
-  it("returns not_implemented for node-api (Phase 4 deferred)", async () => {
-    const result = await createProject({
-      name: "my-app",
-      template: "node-api",
-      github_owner: "acme",
-      approvers: ["alice"],
-    });
-    expect(result).toEqual({ status: "not_implemented" });
-    expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
-  });
-
-  it("returns not_implemented for static-web-app adapter (Phase 3 deferred)", async () => {
+  it("returns not_implemented for nextjs + static-web-app (invalid combo)", async () => {
     const result = await createProject({
       name: "my-app",
       template: "nextjs",
       adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+    expect(result).toEqual({ status: "not_implemented" });
+    expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("returns not_implemented for node-api + static-web-app (invalid combo)", async () => {
+    const result = await createProject({
+      name: "my-app",
+      template: "node-api",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+    });
+    expect(result).toEqual({ status: "not_implemented" });
+    expect(mockOctokit.repos.createForAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("returns not_implemented for react-vite + container-app (invalid combo)", async () => {
+    const result = await createProject({
+      name: "my-app",
+      template: "react-vite",
+      adapter: "container-app",
       github_owner: "acme",
       approvers: ["alice"],
     });
@@ -389,5 +532,386 @@ describe("createProject — App installation auth guard", () => {
       approvers: ["alice"],
     });
     expect(result).toHaveProperty("repo_url");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: Codespaces enablement
+// ---------------------------------------------------------------------------
+
+describe("createProject — Codespaces enablement", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupHappyPath("Organization");
+  });
+
+  it("calls Codespaces access API with visibility:all after repo creation", async () => {
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+    });
+
+    expect(mockOctokit.request).toHaveBeenCalledWith(
+      "PUT /repos/{owner}/{repo}/codespaces/access",
+      expect.objectContaining({
+        owner: "acme-org",
+        repo: "my-app",
+        visibility: "all",
+      })
+    );
+  });
+
+  it("does not throw when Codespaces API fails (non-fatal warning)", async () => {
+    mockOctokit.request.mockRejectedValue(new Error("Codespaces not available"));
+
+    // Should not throw — Codespaces failure is swallowed
+    const result = await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+    });
+
+    expect(result).toHaveProperty("repo_url");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: configureCloud and configureRepo orchestration
+// ---------------------------------------------------------------------------
+
+describe("createProject — cloud and repo orchestration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupHappyPath("Organization");
+  });
+
+  it("calls configureCloud with correct params when azure_subscription_id is provided", async () => {
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+      azure_region: "westus2",
+    });
+    await flushBackground();
+
+    expect(mockConfigureCloud).toHaveBeenCalledWith({
+      project_name: "my-app",
+      github_repo: "acme-org/my-app",
+      azure_subscription_id: "sub-123",
+      azure_region: "westus2",
+      adapter: "container-app",
+    });
+  });
+
+  it("supports node-api on the container-app path", async () => {
+    const result = (await createProject({
+      name: "my-app",
+      template: "node-api",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    })) as Record<string, unknown>;
+    await flushBackground();
+
+    expect(result).toHaveProperty("repo_url");
+    expect(mockConfigureCloud).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_name: "my-app",
+        github_repo: "acme-org/my-app",
+        adapter: "container-app",
+      })
+    );
+  });
+
+  it("creates a node-api scaffold when template is node-api", async () => {
+    await createProject({
+      name: "my-app",
+      template: "node-api",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    const blobBodies = mockOctokit.git.createBlob.mock.calls.map(
+      ([payload]: [{ content: string }]) => payload.content
+    );
+
+    expect(blobBodies.some((content: string) => content.includes("template: node-api"))).toBe(true);
+    expect(blobBodies.some((content: string) => content.includes("express"))).toBe(true);
+  });
+
+  it("calls configureRepo with per-environment azure_client_ids from configureCloud output", async () => {
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+    await flushBackground();
+
+    expect(mockConfigureRepo).toHaveBeenCalledWith(
+      expect.objectContaining({
+        github_repo: "acme-org/my-app",
+        approvers: ["alice"],
+        azure_client_ids: {
+          preview: "client-preview-123",
+          staging: "client-staging-456",
+          production: "client-production-789",
+        },
+        azure_tenant_id: "tenant-abc",
+        azure_subscription_id: "sub-123",
+      })
+    );
+  });
+
+  it("returns status:provisioning immediately (provisioning runs in background)", async () => {
+    const result = (await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    })) as Record<string, unknown>;
+
+    expect(result.status).toBe("provisioning");
+    expect(result).toHaveProperty("repo_url");
+    expect(result).toHaveProperty("pr_url");
+    expect(result).toHaveProperty("message");
+  });
+
+  it("throws a clear error when azure_subscription_id is absent and AZURE_SUBSCRIPTION_ID env var is not set", async () => {
+    delete process.env.AZURE_SUBSCRIPTION_ID; // override the global beforeEach default
+
+    await expect(
+      createProject({
+        name: "my-app",
+        template: "nextjs",
+        github_owner: "acme-org",
+        approvers: ["alice"],
+      })
+    ).rejects.toThrow("azure_subscription_id is required");
+
+    // No GitHub or Azure resources should have been created
+    expect(mockOctokit.repos.createInOrg).not.toHaveBeenCalled();
+    expect(mockConfigureCloud).not.toHaveBeenCalled();
+  });
+
+  it("reads subscription from AZURE_SUBSCRIPTION_ID env var when param is omitted", async () => {
+    process.env.AZURE_SUBSCRIPTION_ID = "env-sub-999"; // override the global default
+
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      // no azure_subscription_id param
+    });
+    await flushBackground();
+
+    expect(mockConfigureCloud).toHaveBeenCalledWith(
+      expect.objectContaining({ azure_subscription_id: "env-sub-999" })
+    );
+  });
+
+  it("does not call configureRepo when configureCloud returns not_implemented", async () => {
+    mockConfigureCloud.mockResolvedValue({ status: "not_implemented" });
+
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+    await flushBackground();
+
+    expect(mockConfigureRepo).not.toHaveBeenCalled();
+  });
+
+  it("opens bootstrap PR first with placeholder body, then updates with Azure outputs after provisioning", async () => {
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    // PR opened first with placeholder body (before provisioning)
+    const prCreateCall = mockOctokit.pulls.create.mock.calls[0]?.[0] as { body: string };
+    expect(prCreateCall.body).toContain("Azure OIDC trust");
+    expect(prCreateCall.body).not.toContain("azurecr.io");
+
+    // Wait for background provisioning to complete
+    await flushBackground();
+
+    // PR updated after provisioning succeeds with real Azure outputs
+    expect(mockOctokit.pulls.update).toHaveBeenCalledWith(
+      expect.objectContaining({ pull_number: 1, owner: "acme-org", repo: "my-app" })
+    );
+    const prUpdateCall = mockOctokit.pulls.update.mock.calls[0]?.[0] as { body: string };
+    expect(prUpdateCall.body).toContain("myappackr.azurecr.io");
+    expect(prUpdateCall.body).toContain("my-app-staging.eastus2.azurecontainerapps.io");
+    expect(prUpdateCall.body).toContain("my-app-prod.eastus2.azurecontainerapps.io");
+  });
+
+  it("opens PR with placeholder body first, then updates it after provisioning succeeds", async () => {
+    // PR created with placeholder, then updated — both must be called
+    await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    const prCreateCall = mockOctokit.pulls.create.mock.calls[0]?.[0] as { body: string };
+    expect(prCreateCall.body).toContain("Azure OIDC trust");
+    expect(prCreateCall.body).not.toContain("azurecr.io");
+
+    await flushBackground();
+
+    expect(mockOctokit.pulls.update).toHaveBeenCalled();
+  });
+
+  it("posts error comment to PR when configureCloud fails (does not re-throw — runs in background)", async () => {
+    const provisioningError = new Error("ARM deployment failed: quota exceeded");
+    mockConfigureCloud.mockRejectedValue(provisioningError);
+
+    // createProject itself does NOT reject — it returns immediately with status:provisioning
+    // and runs provisioning in the background via setImmediate
+    const result = (await createProject({
+      name: "my-app",
+      template: "nextjs",
+      github_owner: "acme-org",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    })) as Record<string, unknown>;
+
+    expect(result.status).toBe("provisioning");
+
+    // PR must have been opened before the failure
+    expect(mockOctokit.pulls.create).toHaveBeenCalled();
+
+    // Wait for background provisioning to run and fail
+    await flushBackground();
+
+    // Error comment posted to PR so failure is visible in GitHub
+    expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 1,
+        owner: "acme-org",
+        repo: "my-app",
+      })
+    );
+    // Find the error comment (not the "started" comment)
+    const errorCommentCall = (mockOctokit.issues.createComment.mock.calls as Array<[{ body: string }]>)
+      .find(([payload]) => payload.body.includes("Azure provisioning failed"));
+    expect(errorCommentCall).toBeDefined();
+    const commentBody = errorCommentCall![0].body;
+    expect(commentBody).toContain("Azure provisioning failed");
+    expect(commentBody).toContain("ARM deployment failed: quota exceeded");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: react-vite + static-web-app path
+// ---------------------------------------------------------------------------
+
+describe("createProject — react-vite on the static-web-app path", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    setupHappyPath("Organization", "acme");
+    mockConfigureCloud.mockResolvedValue(swaCloudOutputs);
+    mockConfigureRepo.mockResolvedValue({ configured: true, swa_token_configured: true });
+  });
+
+  it("supports react-vite + static-web-app and returns repo_url", async () => {
+    const result = (await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    })) as Record<string, unknown>;
+
+    expect(result).toHaveProperty("repo_url");
+    expect(result.status).toBe("provisioning");
+    await flushBackground();
+  });
+
+  it("calls configureCloud with adapter: static-web-app", async () => {
+    await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+    await flushBackground();
+
+    expect(mockConfigureCloud).toHaveBeenCalledWith(
+      expect.objectContaining({
+        project_name: "my-site",
+        adapter: "static-web-app",
+      })
+    );
+  });
+
+  it("does NOT pass swa_deployment_token to configureRepo (token is fetched at runtime)", async () => {
+    await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+    await flushBackground();
+
+    const repoCall = mockConfigureRepo.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(repoCall).not.toHaveProperty("swa_deployment_token");
+  });
+
+  it("creates a react-vite scaffold when template is react-vite", async () => {
+    await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+
+    const blobBodies = mockOctokit.git.createBlob.mock.calls.map(
+      ([payload]: [{ content: string }]) => payload.content
+    );
+
+    expect(blobBodies.some((content: string) => content.includes("template: react-vite"))).toBe(true);
+    expect(blobBodies.some((content: string) => content.includes("react"))).toBe(true);
+  });
+
+  it("configureRepo is called without deployment_token in any form", async () => {
+    await createProject({
+      name: "my-site",
+      template: "react-vite",
+      adapter: "static-web-app",
+      github_owner: "acme",
+      approvers: ["alice"],
+      azure_subscription_id: "sub-123",
+    });
+    await flushBackground();
+
+    const repoCall = mockConfigureRepo.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(repoCall).not.toHaveProperty("swa_deployment_token");
+    expect(repoCall).not.toHaveProperty("deployment_token");
   });
 });

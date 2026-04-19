@@ -13,7 +13,7 @@ This framework targets both Claude Code and OpenAI Codex equally. Before committ
 
 ## Canonical Spec
 
-`plan.md` in this directory is the authoritative build specification. Implement from it. `claude-plan.md` is working notes only.
+`plan.md` in this directory is the authoritative build specification. Implement from it.
 
 ## Intended Usage
 
@@ -40,6 +40,9 @@ Read `.ai/context/USE_CASES.md` alongside `plan.md` before making architecture, 
 cd backend && npm ci
 
 # Run tests
+# Note: router/MCP integration tests still assume listener access in some
+# restricted sandboxes; record that clearly if you hit EPERM until test
+# hardening lands.
 cd backend && npm test
 
 # Type-check the backend
@@ -52,7 +55,11 @@ az bicep build --file infrastructure/container-apps-env.bicep
 bash scripts/init.sh
 
 # Lint
+# Note: this is currently a placeholder command until real linting is wired up.
 cd backend && npm run lint
+
+# Validate Codespaces configuration (framework repo)
+bash scripts/validate-codespaces.sh
 ```
 
 ## Repository Structure
@@ -60,11 +67,11 @@ cd backend && npm run lint
 ```
 vibe-framework/
 ├── .ai/context/          # Shared conventions for both agents
+├── backend/              # TypeScript backend, MCP server, and scaffold generators
 ├── .devcontainer/        # Codespaces config (Claude Code path)
 ├── .github/workflows/    # Reusable pipeline logic — all projects call these
 ├── infrastructure/       # Azure Bicep templates
-├── scripts/              # init.sh, setup-azure.sh, setup-github.sh
-├── templates/            # Project scaffolds (nextjs, react-vite, node-api)
+├── scripts/              # init.sh, setup-azure.sh, setup-github.sh, validate-codespaces.sh
 ├── AGENTS.md             # Codex operating instructions
 ├── CLAUDE.md             # This file
 ├── plan.md               # Authoritative build spec

@@ -32,6 +32,8 @@ The v1 design is provider-native and GitHub-centered:
 - Preview cost-control defaults are `deploy.preview.max_concurrent: 3` and `deploy.preview.ttl_hours: 48`
 - `cloud: azure` is deferred in v1 to avoid implying multicloud support before adapters exist
 - Live MCP invocation from both Codex and Claude is a validation gate before broad backend-action expansion
+- The current v1 scaffold implementation is code-generated from TypeScript rather than a file-based `templates/` directory
+- Broad Phase 3 work begins only after a short stabilization gate aligns canonical docs, release assumptions, and the current implementation status
 
 ## Core Architecture
 ### Product tiers
@@ -198,23 +200,25 @@ approvers:
   - scaffold the selected template
   - write `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, workflows, and infrastructure files
   - enable and validate GitHub Codespaces for the generated repository and include a working `.devcontainer/devcontainer.json`
-  - provision a dedicated Azure Container Apps environment for the generated project, plus its GitHub environment settings
-  - create the generated repo's own GitHub environments, secrets, and variables required for preview, staging, and production workflows
+  - open an initial bootstrap PR as soon as the scaffold branch is pushed — before any Azure provisioning — so that failures leave a recoverable, reviewable GitHub surface; return `{ repo_url, pr_url, pr_number, status: "provisioning" }` at this point
+  - provision a dedicated Azure Container Apps environment for the generated project (via `configure_cloud`), plus its GitHub environment settings (via `configure_repo`), asynchronously in the background after the HTTP/MCP response has been returned
+  - on provisioning success: update the PR body with real Azure outputs and post "✅ complete" comment; on failure: post an error comment with retry instructions — do NOT re-throw (background task; caller has already received the response)
   - validate project-specific deployment plumbing, including preview deployment, after the project repo and environment exist
-  - open an initial bootstrap PR instead of committing directly to the default branch, so all generated repos start with the same reviewable and auditable adoption flow
-- `import_project` is the existing-repo adoption path:
+- `import_project` is the existing-repo adoption path — **currently scoped to Next.js repos and empty/bare repos only** (Phase 3):
+  - validate the target repo is Next.js (package.json with `"next"` in deps) or empty; fail closed with a clear error for non-Next.js repos that have a package.json; repos with no package.json proceed as empty/bare (caller responsibility)
   - connect an existing GitHub repo through the GitHub App
   - open a bootstrap PR instead of modifying the default branch directly
   - add `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, workflow wrappers, `.devcontainer/devcontainer.json`, and required infra/config files
   - enable and validate GitHub Codespaces for the adopted repository
   - provision a dedicated Azure Container Apps environment for the adopted project, plus its GitHub environment settings
   - create the adopted repo's own GitHub environments, secrets, and variables required for preview, staging, and production workflows
-  - validate project-specific deployment plumbing, including preview deployment, after the adopted repo and environment exist
   - avoid restructuring application code unless required for deployability and clearly shown in the bootstrap PR
+  - support for arbitrary existing repos of other stacks (Python, Ruby, Go, etc.) is deferred to a future phase
 - The provider tool is the canonical no-desktop trigger, but `init.sh` remains a first-class manual path for projects created outside the Claude or Codex front door.
 
 ### Generated repo model
 - Each project repo consumes reusable workflows from this framework via pinned references.
+- In v1, generated project files may come from code-based scaffold generators rather than a physical `templates/` directory. The contract is the generated output, not the storage format used inside the framework repo.
 - The project repo includes:
   - `vibe.yaml`
   - `CLAUDE.md`
@@ -262,17 +266,31 @@ approvers:
 - Implement preview lifecycle controls in the reusable workflows, including preview cleanup on PR close or merge, preview TTL enforcement, and per-project concurrency limits for active previews driven by `vibe.yaml` defaults.
 - Add Azure Bicep for Container Apps, OIDC, and optional Static Web Apps adapter resources.
 
+### Phase 2.5 — Stabilization Gate
+- Update the canonical docs so they accurately reflect what is already real, what is partial, and what remains deferred in the backend and bootstrap flows.
+- Close the MCP validation loop in the canonical docs and GitHub records now that live Codex and Claude invocation has been proven.
+- Verify the release-pin strategy before continuing to rely on `@v1`; use a verified release tag or a pinned SHA, but never an assumed tag.
+- Implement `init.sh` as the shell bootstrap entry point for the bootstrap tier, or explicitly revise the bootstrap contract away from it before broad Phase 3 work begins.
+- Make the provider-facing backend production-safe enough for real bootstrap use; dev-only auth stubs are acceptable for validation but not as the steady-state bootstrap path.
+- Keep Phase 3 scoped to one walking skeleton until the first end-to-end path is proven.
+
 ### Phase 3
-- Build `init.sh` plus the remote bootstrap flow for new and existing repos.
-- Complete one vertical slice before filling in remaining stubs: `create_project` must be able to create a real Next.js repository and open a bootstrap PR, even if Azure provisioning remains partially deferred during the first proof.
-- Scaffold the Next.js template with Dockerfile, workflow wrappers, manifest, provider instruction files, starter app, and Codespaces support.
-- Add generated-repo Codespaces enablement and validation to the project bootstrap flow.
-- Implement existing-repo adoption as a bootstrap PR flow rather than direct default-branch modification.
-- Add preview screenshots and PR status reporting.
+- Start with one supported walking skeleton only:
+  - `create_project`
+  - `nextjs`
+  - `container-app`
+  - org-owned repositories
+- Build `init.sh` plus the remote bootstrap flow needed to support that walking skeleton end to end.
+- Complete one vertical slice before broadening scope: `create_project` must create a real Next.js repository, provision the required repo and cloud settings, open a bootstrap PR, and reach a working preview flow through GitHub.
+- Keep the current Next.js scaffold generator as the canonical v1 template implementation unless there is a deliberate decision to invest in file-based templates later.
+- Add generated-repo Codespaces enablement and validation to the supported bootstrap path.
+- Complete PR-visible backend enrichment for that path, including preview screenshots and status reporting.
+- Defer `import_project`, `generate_assets`, additional templates, and broad adapter expansion until the first walking skeleton is proven end to end.
 
 ### Phase 4
-- Validate the full issue-to-preview-to-staging-to-production loop on a sample Next.js project.
-- Add React/Vite and Node API templates after the default path is proven.
+- Validate the full issue-to-preview-to-staging-to-production loop on a sample Next.js project by following `.ai/context/PHASE4_VALIDATION_RUNBOOK.md`.
+- Add React/Vite after the default path is proven and the static-web-app adapter is ready.
+- Node API scaffold support is now implemented on the container-app path.
 
 ## Day-to-day Workflow
 1. Create a GitHub issue from phone or desktop.
@@ -289,10 +307,9 @@ approvers:
 - Bootstrap the framework itself on a fresh GitHub account and Azure subscription and verify GitHub App, OIDC, and shared Azure resources are configured correctly.
 - Verify framework bootstrap enables and validates GitHub Codespaces for the framework repository.
 - Verify a fresh phone-only ChatGPT/Codex or Claude session can discover and invoke the backend MCP tools, including `create_project`, through the remote MCP server endpoint after framework bootstrap.
-- Create a brand-new project through `init.sh` and verify repo creation, manifest generation, GitHub setup, and Azure provisioning.
-- Create a brand-new project through the provider-tool-triggered bootstrap path without using a local shell and verify it reaches the same configured state as the `init.sh` path.
-- Import an existing GitHub repo and verify framework adoption happens through a bootstrap PR rather than direct default-branch changes.
-- Verify import PR contents are limited to framework adoption files plus only the minimum app changes required for deployability.
+- Verify the Phase 2.5 stabilization gate: canonical docs match the real implementation state, the release ref strategy is explicit, and the shell bootstrap entry point is either implemented or intentionally revised.
+- Create a brand-new project through `init.sh` and verify repo creation, manifest generation, GitHub setup, Azure provisioning, and the remote MCP bootstrap surface all succeed for the supported walking skeleton.
+- Create a brand-new project through the provider-tool-triggered bootstrap path without using a local shell and verify it reaches the same configured state as the supported `init.sh` path.
 - Verify a generated repository is Codespaces-ready and usable by Claude without local machine setup.
 - Run the same issue through ChatGPT/Codex and Claude on different passes and verify safe branch handoff.
 - Verify only one provider actively writes to a branch at a time.
@@ -304,7 +321,6 @@ approvers:
 - Verify merge to `develop` deploys staging and `develop` to `main` deploys production with manual approval.
 - Verify OIDC auth works without long-lived Azure deployment secrets.
 - Verify workflow version pinning by intentionally upgrading a generated repo from one framework workflow release to another.
-- Verify the static adapter works for a static-only project without changing the shared workflow model.
 
 ## Assumptions
 - V1 targets web projects first.

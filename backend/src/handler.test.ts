@@ -8,6 +8,50 @@ vi.mock("./actions/bootstrap-framework.js", () => ({
   bootstrapFramework: vi.fn(),
 }));
 
+// Mocked so import_project dispatch tests never make real GitHub/Azure calls.
+vi.mock("./actions/import-project.js", () => ({
+  importProject: vi.fn().mockResolvedValue({
+    status: "adopted",
+    github_repo: "owner/existing-app",
+    bootstrap_pr_url: "https://github.com/owner/existing-app/pull/1",
+    bootstrap_pr_number: 1,
+    cloud_provisioned: true,
+    repo_configured: true,
+  }),
+}));
+
+// Mocked so configure_cloud dispatch tests never call real Azure.
+vi.mock("./actions/configure-cloud.js", () => ({
+  configureCloud: vi.fn().mockResolvedValue({
+    status: "provisioned",
+    project_name: "my-app",
+    github_repo: "acme/my-app",
+    resource_group: "my-app-rg",
+    azure_region: "eastus2",
+    acr_login_server: "myappackr.azurecr.io",
+    acr_id: "/subscriptions/sub-123/resourceGroups/my-app-rg/providers/Microsoft.ContainerRegistry/registries/myappackr",
+    staging_fqdn: "my-app-staging.eastus2.azurecontainerapps.io",
+    production_fqdn: "my-app-prod.eastus2.azurecontainerapps.io",
+    oidc_client_ids: { preview: "c-preview", staging: "c-staging", production: "c-prod" },
+    tenant_id: "tenant-abc",
+    subscription_id: "sub-test-123",
+  }),
+}));
+
+// Mocked so create_project dispatch tests never call configure_repo directly.
+vi.mock("./actions/configure-repo.js", () => ({
+  configureRepo: vi.fn().mockResolvedValue({ configured: true }),
+}));
+
+// configure-repo and configure-cloud both import libsodium-wrappers.
+// Mock it here so the handler module can load without a real crypto environment.
+vi.mock("libsodium-wrappers", () => ({
+  default: {
+    ready: Promise.resolve(),
+    crypto_box_seal: vi.fn().mockReturnValue(new Uint8Array([1, 2, 3])),
+  },
+}));
+
 // Mocked so create_project dispatch tests never make real GitHub API calls.
 vi.mock("./lib/github-client.js", () => ({
   getGithubClient: () => ({
@@ -25,6 +69,9 @@ vi.mock("./lib/github-client.js", () => ({
     },
     issues: {
       createLabel: vi.fn().mockResolvedValue({}),
+      createComment: vi.fn().mockResolvedValue({
+        data: { id: 1, html_url: "https://github.com/owner/repo/pull/1#issuecomment-1" },
+      }),
     },
     git: {
       getRef: vi.fn().mockResolvedValue({ data: { object: { sha: "abc" } } }),
@@ -38,7 +85,9 @@ vi.mock("./lib/github-client.js", () => ({
       create: vi.fn().mockResolvedValue({
         data: { html_url: "https://github.com/acme/my-app/pull/1", number: 1 },
       }),
+      update: vi.fn().mockResolvedValue({}),
     },
+    request: vi.fn().mockResolvedValue({}),
   }),
 }));
 
@@ -138,6 +187,7 @@ describe("handleAction — dispatch coverage", () => {
         template: "nextjs",
         github_owner: "acme",
         approvers: ["alice"],
+        azure_subscription_id: "sub-test-123",
       },
     });
     const { res, json } = makeRes();
@@ -177,6 +227,7 @@ describe("handleAction — dispatch coverage", () => {
       params: {
         project_name: "my-app",
         github_repo: "owner/my-app",
+        azure_subscription_id: "sub-123",
       },
     });
     const { res, json } = makeRes();

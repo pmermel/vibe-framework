@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "appName": {
+      "type": "string"
+    },
+    "region": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]"
+    },
+    "sku": {
+      "type": "string",
+      "defaultValue": "Standard",
+      "allowedValues": ["Free", "Standard"]
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/staticSites",
+      "apiVersion": "2023-01-01",
+      "name": "[concat(parameters('appName'), '-swa')]",
+      "location": "[parameters('region')]",
+      "sku": {
+        "name": "[parameters('sku')]",
+        "tier": "[parameters('sku')]"
+      },
+      "properties": {
+        "buildProperties": {
+          "skipGithubActionWorkflowGeneration": true
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "swaId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Web/staticSites', concat(parameters('appName'), '-swa'))]"
+    },
+    "defaultHostname": {
+      "type": "string",
+      "value": "[reference(concat(parameters('appName'), '-swa')).defaultHostname]"
+    },
+    "deploymentToken": {
+      "type": "securestring",
+      "value": "[listSecrets(resourceId('Microsoft.Web/staticSites', concat(parameters('appName'), '-swa')), '2023-01-01').properties.apiKey]"
+    }
+  }
+}

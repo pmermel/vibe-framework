@@ -1,6 +1,11 @@
 import { z } from "zod";
+import { Octokit } from "@octokit/rest";
 import { getGithubClient } from "../lib/github-client.js";
 import { generateNextjsScaffold } from "../scaffold/nextjs.js";
+import { generateNodeApiScaffold } from "../scaffold/node-api.js";
+import { generateReactViteScaffold } from "../scaffold/react-vite.js";
+import { configureCloud } from "./configure-cloud.js";
+import { configureRepo } from "./configure-repo.js";
 
 const CreateProjectParams = z.object({
   name: z.string(),
@@ -8,6 +13,7 @@ const CreateProjectParams = z.object({
   adapter: z.enum(["container-app", "static-web-app"]).default("container-app"),
   github_owner: z.string(),
   azure_region: z.string().default("eastus2"),
+  azure_subscription_id: z.string().optional(),
   approvers: z.array(z.string()).min(1),
   framework_repo: z.string().default("pmermel/vibe-framework"),
 });
@@ -15,38 +21,57 @@ const CreateProjectParams = z.object({
 /**
  * createProject
  *
- * Fresh-repo bootstrap path. Creates a new GitHub repository under `github_owner`,
- * scaffolds the selected template, and opens a bootstrap PR with all framework files.
+ * Full project bootstrap orchestrator. Creates a new GitHub repository under
+ * `github_owner`, scaffolds the selected template, enables Codespaces, opens a
+ * bootstrap PR immediately (before any provisioning, so failures leave a visible
+ * GitHub-centered handoff surface), then provisions Azure infrastructure via
+ * `configureCloud` and configures GitHub environments/branch-protections/OIDC secrets
+ * via `configureRepo`. On provisioning success the PR body is updated with real Azure
+ * outputs; on failure an error comment with retry instructions is posted to the PR — the error
+ * is NOT re-thrown (provisioning runs in the background via `setImmediate` after the HTTP/MCP
+ * response has already been returned).
  *
- * **Phase 1 support:**
- * - Template: only `"nextjs"` is implemented. `"react-vite"` and `"node-api"` are
- *   schema-accepted but deferred to Phase 4.
- * - Adapter: only `"container-app"` is implemented. `"static-web-app"` reusable
- *   workflows do not yet exist; passing it returns `{ status: "not_implemented" }`.
- *   Both unsupported combinations return `{ status: "not_implemented" }`.
+ * **Template/adapter support:**
+ * - Template: `"nextjs"` and `"node-api"` are implemented on the container-app path.
+ *   `"react-vite"` is implemented on the static-web-app path.
+ * - Adapter: `"container-app"` (nextjs, node-api) and `"static-web-app"` (react-vite) are
+ *   both implemented. Invalid combos (e.g. nextjs+static-web-app) return `not_implemented`.
+ *
+ * **Subscription ID resolution:**
+ * `azure_subscription_id` may be omitted by the caller — the backend falls back to
+ * `process.env.AZURE_SUBSCRIPTION_ID`, which `setup-azure.sh` sets on the Container App
+ * during framework bootstrap. If neither the param nor the env var is set, the action
+ * throws a clear error immediately (before creating any GitHub resources) rather than
+ * silently skipping Azure provisioning and returning a partially-configured result.
  *
  * Does NOT commit directly to the default branch — all changes arrive via bootstrap PR.
  * Does NOT deploy the application — deployment is triggered by GitHub Actions after the
  * bootstrap PR is merged.
- * Does NOT provision Azure resources — `configure_cloud` handles that and is deferred.
- * Does NOT configure GitHub environments, branch protections, or secrets — `configure_repo`
- * handles that and is deferred.
  * Does NOT validate that `approvers` are valid GitHub users.
+ *
+ * Codespaces enablement is attempted via the GitHub API after repo creation. If it
+ * fails (e.g. plan or org restrictions), a warning is logged and the rest of bootstrap
+ * continues normally — this is a best-effort step.
  *
  * See `.ai/context/BOOTSTRAP_CONTRACTS.md` for the full step-by-step contract.
  *
  * @param params - Must match `CreateProjectParams` schema:
  *   - `name` (string, required — new repo name)
- *   - `template` (`"nextjs"` — Phase 1 validated; `"react-vite"` | `"node-api"` deferred to Phase 4)
- *   - `adapter` (`"container-app"` — Phase 1 validated; `"static-web-app"` deferred to Phase 3)
+ *   - `template` (`"nextjs"` | `"node-api"` on container-app; `"react-vite"` on static-web-app)
+ *   - `adapter` (`"container-app"` for nextjs/node-api; `"static-web-app"` for react-vite)
  *   - `github_owner` (string, required — org or user that will own the repo)
  *   - `azure_region` (string, optional, default `"eastus2"`)
+ *   - `azure_subscription_id` (string, optional) — falls back to `AZURE_SUBSCRIPTION_ID` env var
  *   - `approvers` (string[], required, min 1)
  *   - `framework_repo` (string, optional, default `"pmermel/vibe-framework"`)
- * @returns `{ repo_url, pr_url, pr_number }` on success for nextjs + container-app;
- *          `{ status: "not_implemented" }` for unimplemented template/adapter combos.
+ * @returns `{ repo_url, pr_url, pr_number, status: "provisioning", message }` immediately
+ *   after the bootstrap PR is opened. Azure provisioning runs in the background via
+ *   `setImmediate`; success and failure are surfaced as PR comments, not in the return value.
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
- * @throws GitHub API errors if repo creation or Git operations fail.
+ * @throws `"azure_subscription_id is required..."` if subscription cannot be resolved.
+ * @throws GitHub API errors if repo creation or Git operations fail (synchronous — before return).
+ * @throws Never for Azure/Graph provisioning errors — these are caught in `provisionInBackground`,
+ *   posted as a PR comment with retry instructions, and logged; they do NOT propagate to the caller.
  */
 export async function createProject(params: Record<string, unknown>): Promise<unknown> {
   const parsed = CreateProjectParams.safeParse(params);
@@ -56,11 +81,31 @@ export async function createProject(params: Record<string, unknown>): Promise<un
 
   const config = parsed.data;
 
-  // Only nextjs + container-app is implemented in Phase 1.
-  // react-vite and node-api are deferred to Phase 4.
-  // static-web-app is deferred to Phase 3 (reusable SWA workflows don't exist yet).
-  if (config.template !== "nextjs" || config.adapter !== "container-app") {
+  // Valid template+adapter combos:
+  //   nextjs   + container-app   ✅
+  //   node-api + container-app   ✅
+  //   react-vite + static-web-app ✅
+  // All other combos are not implemented.
+  const validCombo =
+    (config.adapter === "container-app" && (config.template === "nextjs" || config.template === "node-api")) ||
+    (config.adapter === "static-web-app" && config.template === "react-vite");
+
+  if (!validCombo) {
     return { status: "not_implemented" };
+  }
+
+  // Resolve azure_subscription_id: prefer caller-supplied, fall back to the env var
+  // set by setup-azure.sh during framework bootstrap. Fail immediately if neither is
+  // available — create_project always provisions Azure infra; silent degradation is
+  // not acceptable because it returns a "successful" but incomplete bootstrap.
+  const subscriptionId = config.azure_subscription_id ?? process.env.AZURE_SUBSCRIPTION_ID;
+  if (!subscriptionId) {
+    throw new Error(
+      "azure_subscription_id is required but was not provided and AZURE_SUBSCRIPTION_ID " +
+      "is not set in the backend environment. Complete framework bootstrap via init.sh " +
+      "(which wires AZURE_SUBSCRIPTION_ID to the backend container) or pass " +
+      "azure_subscription_id explicitly."
+    );
   }
 
   const octokit = getGithubClient();
@@ -117,6 +162,24 @@ export async function createProject(params: Record<string, unknown>): Promise<un
   const repoUrl = createRepoResponse.data.html_url;
   const defaultBranch = createRepoResponse.data.default_branch ?? "main";
 
+  // Enable Codespaces access on the new repo.
+  // Codespaces requires specific GitHub plan / org settings. Wrap in try/catch and
+  // log a warning if it fails — do not throw, as this is a best-effort convenience
+  // feature and should not block the rest of the bootstrap.
+  try {
+    await octokit.request("PUT /repos/{owner}/{repo}/codespaces/access", {
+      owner: config.github_owner,
+      repo: config.name,
+      visibility: "all",
+    });
+  } catch (err: unknown) {
+    console.warn(
+      `[create_project] Warning: failed to enable Codespaces access on ` +
+        `${config.github_owner}/${config.name}. This is non-fatal — the repo was ` +
+        `created successfully. Error: ${String(err)}`
+    );
+  }
+
   // Get the commit SHA at the tip of the default branch
   const refResponse = await octokit.git.getRef({
     owner: config.github_owner,
@@ -134,15 +197,36 @@ export async function createProject(params: Record<string, unknown>): Promise<un
   });
   const baseTreeSha = baseCommit.data.tree.sha;
 
-  // Generate scaffold files
-  const scaffoldFiles = generateNextjsScaffold({
-    name: config.name,
-    github_owner: config.github_owner,
-    azure_region: config.azure_region,
-    adapter: config.adapter,
-    approvers: config.approvers,
-    framework_repo: config.framework_repo,
-  });
+  // Generate scaffold files based on template
+  let scaffoldFiles: Record<string, string>;
+  if (config.template === "node-api") {
+    scaffoldFiles = generateNodeApiScaffold({
+      name: config.name,
+      github_owner: config.github_owner,
+      azure_region: config.azure_region,
+      adapter: config.adapter,
+      approvers: config.approvers,
+      framework_repo: config.framework_repo,
+    });
+  } else if (config.template === "react-vite") {
+    scaffoldFiles = generateReactViteScaffold({
+      name: config.name,
+      github_owner: config.github_owner,
+      azure_region: config.azure_region,
+      adapter: config.adapter,
+      approvers: config.approvers,
+      framework_repo: config.framework_repo,
+    });
+  } else {
+    scaffoldFiles = generateNextjsScaffold({
+      name: config.name,
+      github_owner: config.github_owner,
+      azure_region: config.azure_region,
+      adapter: config.adapter,
+      approvers: config.approvers,
+      framework_repo: config.framework_repo,
+    });
+  }
 
   // Create a blob for each file and build a tree
   const treeItems = await Promise.all(
@@ -174,9 +258,21 @@ export async function createProject(params: Record<string, unknown>): Promise<un
   const commitResponse = await octokit.git.createCommit({
     owner: config.github_owner,
     repo: config.name,
-    message: "chore(bootstrap): scaffold vibe-framework Next.js project",
+    message: `chore(bootstrap): scaffold vibe-framework ${config.template} project`,
     tree: treeResponse.data.sha,
     parents: [baseSha],
+  });
+
+  // Create the develop branch from the scaffold commit (not baseSha / the empty init
+  // commit) so that develop already contains the generated project from day one.
+  // Feature branches created after the bootstrap PR merges will have the correct base tree.
+  // This must happen before the bootstrap PR is opened so that future feature PRs can
+  // target develop immediately after the bootstrap PR is merged.
+  await octokit.git.createRef({
+    owner: config.github_owner,
+    repo: config.name,
+    ref: "refs/heads/develop",
+    sha: commitResponse.data.sha,
   });
 
   // Create the bootstrap branch pointing at the new commit
@@ -188,44 +284,223 @@ export async function createProject(params: Record<string, unknown>): Promise<un
     sha: commitResponse.data.sha,
   });
 
-  // Open the bootstrap PR
+  // Open the bootstrap PR immediately — before any provisioning.
+  // The PR is the GitHub-centered handoff surface. It must exist as soon as the
+  // scaffold branch is pushed so that partial failures leave the user with a
+  // recoverable, reviewable state in GitHub rather than a silent dead end.
   const prResponse = await octokit.pulls.create({
     owner: config.github_owner,
     repo: config.name,
     title: "chore(bootstrap): vibe-framework scaffold",
-    body: bootstrapPrBody(config.name, config.azure_region),
+    body: bootstrapPrBody(config.name, config.template, config.azure_region, undefined),
     head: bootstrapBranch,
     base: defaultBranch,
+  });
+
+  const prNumber = prResponse.data.number;
+
+  // --- Azure provisioning and GitHub repo configuration (background) ---
+  // Kicked off asynchronously after returning to the caller. The bootstrap PR
+  // is the status surface — progress and errors are posted as PR comments.
+  // This ensures create_project returns in <10s regardless of how long Azure
+  // provisioning takes (typically 3–5 minutes for a full Container Apps deployment).
+  setImmediate(() => {
+    provisionInBackground({
+      config,
+      subscriptionId,
+      octokit,
+      prNumber,
+      repoUrl: repoUrl,
+      prUrl: prResponse.data.html_url,
+    });
   });
 
   return {
     repo_url: repoUrl,
     pr_url: prResponse.data.html_url,
-    pr_number: prResponse.data.number,
+    pr_number: prNumber,
+    status: "provisioning",
+    message:
+      "Repository created and bootstrap PR opened. Azure provisioning is running in the background. " +
+      "Progress and results will be posted as comments on the bootstrap PR.",
   };
 }
 
-function bootstrapPrBody(name: string, azureRegion: string): string {
+/**
+ * provisionInBackground
+ *
+ * Runs configureCloud + configureRepo after the HTTP response has been returned.
+ * Posts progress and error comments to the bootstrap PR. Never throws — all errors
+ * are surfaced as PR comments so the operator can recover from GitHub.
+ */
+async function provisionInBackground({
+  config,
+  subscriptionId,
+  octokit,
+  prNumber,
+  repoUrl: _repoUrl,
+  prUrl: _prUrl,
+}: {
+  config: {
+    name: string;
+    template: "nextjs" | "react-vite" | "node-api";
+    adapter: "container-app" | "static-web-app";
+    github_owner: string;
+    azure_region: string;
+    approvers: string[];
+    framework_repo: string;
+  };
+  subscriptionId: string;
+  octokit: Octokit;
+  prNumber: number;
+  repoUrl: string;
+  prUrl: string;
+}): Promise<void> {
+  const postComment = async (body: string) => {
+    await octokit.issues.createComment({
+      owner: config.github_owner,
+      repo: config.name,
+      issue_number: prNumber,
+      body,
+    }).catch((err: unknown) => {
+      console.error("[create_project] Failed to post PR comment:", err);
+    });
+  };
+
+  try {
+    await postComment("⏳ **Azure provisioning started** — this takes 3–5 minutes. Progress will be posted here.");
+
+    const cloudOutputs = (await configureCloud({
+      project_name: config.name,
+      github_repo: `${config.github_owner}/${config.name}`,
+      azure_subscription_id: subscriptionId,
+      azure_region: config.azure_region,
+      adapter: config.adapter,
+    })) as Record<string, unknown>;
+
+    if (cloudOutputs.status !== "not_implemented") {
+      const oidcClientIds = cloudOutputs.oidc_client_ids as { preview: string; staging: string; production: string };
+
+      await configureRepo({
+        github_repo: `${config.github_owner}/${config.name}`,
+        approvers: config.approvers,
+        azure_client_ids: oidcClientIds,
+        azure_tenant_id: cloudOutputs.tenant_id as string,
+        azure_subscription_id: cloudOutputs.subscription_id as string,
+        backend_url: process.env.BACKEND_URL,
+      });
+
+      // Update PR body with real Azure outputs.
+      await octokit.pulls.update({
+        owner: config.github_owner,
+        repo: config.name,
+        pull_number: prNumber,
+        body: bootstrapPrBody(config.name, config.template, config.azure_region, cloudOutputs),
+      });
+
+      await postComment("✅ **Azure provisioning complete** — OIDC trust configured, GitHub environments set up. Merge this PR to trigger the first staging deployment.");
+    }
+  } catch (err: unknown) {
+    await postComment([
+      "❌ **Azure provisioning failed**",
+      "",
+      "The repository and bootstrap branch were created successfully, but Azure provisioning failed with:",
+      "",
+      "```",
+      String(err),
+      "```",
+      "",
+      "To retry, call `configure_cloud` and `configure_repo` with this repo as the target, then update the PR description with the outputs.",
+    ].join("\n"));
+    console.error("[create_project] Background provisioning failed:", err);
+  }
+}
+
+function bootstrapPrBody(
+  name: string,
+  template: "nextjs" | "react-vite" | "node-api",
+  azureRegion: string,
+  cloudOutputs?: Record<string, unknown>
+): string {
+  let templateDescription: string;
+  if (template === "node-api") {
+    templateDescription = [
+      "- `vibe.yaml` — project manifest",
+      "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
+      "- `.devcontainer/devcontainer.json` — Codespaces support",
+      "- `.github/workflows/` — thin wrappers calling vibe-framework reusable workflows",
+      "- `Dockerfile` — multi-stage Node API production image",
+      "- `package.json`, `tsconfig.json` — Node API config",
+      "- `src/index.ts` — minimal Express starter",
+    ].join("\n");
+  } else if (template === "react-vite") {
+    templateDescription = [
+      "- `vibe.yaml` — project manifest",
+      "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
+      "- `.devcontainer/devcontainer.json` — Codespaces support (port 5173)",
+      "- `.github/workflows/` — thin wrappers calling pinned reusable SWA framework workflows",
+      "- `index.html`, `vite.config.ts` — Vite project config",
+      "- `package.json`, `tsconfig.json` — React/Vite config",
+      "- `src/` — minimal React starter (App.tsx, main.tsx)",
+    ].join("\n");
+  } else {
+    templateDescription = [
+      "- `vibe.yaml` — project manifest",
+      "- `CLAUDE.md`, `AGENTS.md` — provider instruction files",
+      "- `.devcontainer/devcontainer.json` — Codespaces support",
+      "- `.github/workflows/` — thin wrappers calling vibe-framework reusable workflows",
+      "- `Dockerfile` — multi-stage Next.js production image",
+      "- `package.json`, `tsconfig.json`, `next.config.ts` — Next.js config",
+      "- `src/app/` — minimal app router starter",
+    ].join("\n");
+  }
+
+  let azureSection: string;
+  if (cloudOutputs) {
+    if (cloudOutputs.swa_hostname) {
+      // Static Web App path
+      azureSection = `### Azure provisioning
+
+| Resource | Value |
+|---|---|
+| Static Web App hostname | \`${cloudOutputs.swa_hostname}\` |
+| Resource group | \`${cloudOutputs.resource_group ?? `${name}-rg`}\` |
+| Region | \`${azureRegion}\` |
+
+GitHub environments (\`preview\`, \`staging\`, \`production\`) have been configured with
+per-environment \`AZURE_CLIENT_ID\`, \`AZURE_TENANT_ID\`, and \`AZURE_SUBSCRIPTION_ID\` secrets.
+The SWA deployment token is fetched at runtime by the reusable workflow via OIDC — no long-lived token is stored.`;
+    } else {
+      // Container App path
+      azureSection = `### Azure provisioning
+
+| Resource | Value |
+|---|---|
+| ACR login server | \`${cloudOutputs.acr_login_server ?? "—"}\` |
+| Staging FQDN | \`${cloudOutputs.staging_fqdn ?? "—"}\` |
+| Production FQDN | \`${cloudOutputs.production_fqdn ?? "—"}\` |
+| Resource group | \`${cloudOutputs.resource_group ?? `${name}-rg`}\` |
+| Region | \`${azureRegion}\` |
+
+GitHub environments (\`preview\`, \`staging\`, \`production\`) have been configured with
+per-environment \`AZURE_CLIENT_ID\`, \`AZURE_TENANT_ID\`, and \`AZURE_SUBSCRIPTION_ID\` secrets.`;
+    }
+  } else {
+    azureSection = `### Checklist
+
+- [ ] Azure OIDC trust configured for \`${name}\` in \`${azureRegion}\`
+- [ ] GitHub environments (\`preview\`, \`staging\`, \`production\`) configured with Azure secrets`;
+  }
+
   return `## vibe-framework Bootstrap
 
 This PR was opened automatically by \`create_project\`.
 
 ### What's included
 
-- \`vibe.yaml\` — project manifest
-- \`CLAUDE.md\`, \`AGENTS.md\` — provider instruction files
-- \`.devcontainer/devcontainer.json\` — Codespaces support
-- \`.github/workflows/\` — thin wrappers calling vibe-framework reusable workflows
-- \`Dockerfile\` — multi-stage Next.js production image
-- \`package.json\`, \`tsconfig.json\`, \`next.config.ts\` — Next.js config
-- \`src/app/\` — minimal app router starter
+${templateDescription}
 
-### Checklist
-
-- [ ] Preview URL (populated after CI runs)
-- [ ] Azure OIDC trust configured for \`${name}\` in \`${azureRegion}\`
-- [ ] GitHub environments (\`preview\`, \`staging\`, \`production\`) configured
-- [ ] Codespaces enabled and usable
+${azureSection}
 
 ### Next steps
 

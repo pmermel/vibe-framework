@@ -2,30 +2,34 @@
 
 Defines the contracts for all bootstrap actions in vibe-framework. Both providers must implement or invoke these contracts identically.
 
-## Implementation Status (v0.1 — stubs only)
+## Implementation Status
 
-All actions documented below are currently **param-validation stubs**. They:
-- Accept and validate the documented params (Zod schemas enforced — invalid params → 400)
-- Return `{ status: "not_implemented" }` for any valid request
-- Do **not** make GitHub API calls, Azure API calls, or any external requests
+| Action | Status | Notes |
+|---|---|---|
+| `create_project` (nextjs/node-api + container-app, react-vite + static-web-app) | ✅ Implemented | Full bootstrap orchestrator: creates GitHub repo, scaffolds the selected supported template, enables Codespaces, opens bootstrap PR immediately (returns `{ repo_url, pr_url, pr_number, status: "provisioning", message }` before Azure work begins), then runs `configure_cloud` + `configure_repo` asynchronously in the background. Provisioning progress and results are posted as PR comments. On success the PR body is updated with real Azure outputs. On failure an error comment with retry instructions is posted — the error is NOT re-thrown (background task). `configure_repo` receives per-environment `azure_client_ids` map from `configure_cloud` output. No `swa_deployment_token` is passed — for static-web-app projects the SWA deployment token is fetched at runtime by `reusable-swa-*.yml` workflows. |
+| `configure_repo` | ✅ Implemented | Branch protections, environments, labels, OIDC secrets via GitHub App. Does NOT store `AZURE_STATIC_WEB_APPS_API_TOKEN` — that token is fetched at runtime by the reusable SWA workflows. |
+| `configure_cloud` | ✅ Implemented | Container-app path: deploys `container-apps-env.json` ARM template; provisions OIDC credentials; assigns Contributor + AcrPush roles. Static-web-app path: deploys `static-web-app.json` ARM template; provisions OIDC credentials; assigns Contributor role only (no ACR/AcrPush). Deployment token is NOT returned — fetched at runtime by `reusable-swa-*.yml` workflows via `az staticwebapp secrets list`. Both paths: idempotent (check-before-create + deterministic GUID names); returns Azure outputs for `configure_repo`. |
+| `post_status` | ✅ Implemented | Posts real GitHub PR comment via `issues.createComment`; returns `posted: true`, `comment_id`, `comment_url`. When `screenshot_url` is provided, embeds Markdown image in the comment body alongside the status/message. |
+| `capture_preview` | ✅ Implemented | Playwright screenshot captured and uploaded to Azure Blob Storage (`screenshots` container in framework-level Storage Account provisioned by `framework-env.bicep`). Returns `{ posted: true, screenshot_url }` when `AZURE_STORAGE_ACCOUNT_NAME` is set (managed-identity auth via `DefaultAzureCredential`). Falls back to `{ posted: false, posted_deferred_reason: "external_storage_required" }` when not configured. Blob name: `pr-{pr_number}/{timestamp}.png`. |
+| `import_project` | ✅ Implemented | Full adoption flow: validates repo access, enables Codespaces (best-effort), opens bootstrap PR first (PR-first ordering — same as `create_project`), calls `configure_cloud` + `configure_repo`, updates PR body with Azure outputs on success, posts error comment on failure and re-throws. Adoption files are framework-level only (vibe.yaml, CLAUDE.md, AGENTS.md, .ai/context/, .devcontainer/, .github/workflows/, infrastructure/) — application code is never overwritten. |
+| `bootstrap_framework` | ✅ Implemented | Validates GitHub App auth, backend `/health`, and GitHub environments (`preview`/`staging`/`production`); returns `{ status: "ok"\|"degraded", checks: { github_app, backend_health, environments }, details: string[] }`; never throws on check failure |
+| `generate_assets` | 🔲 Stub | Returns `not_implemented`; deferred to Phase 3 |
 
-Full implementation is planned for Phase 2 (`configure_cloud`, `configure_repo`) and
-Phase 3 (`create_project`, `import_project`). This document describes the **intended
-contract**, not the current behaviour. Do not assume any action has side effects until
-its implementation status is updated here.
+Stubs accept and validate the documented params (Zod schemas enforced — invalid params → 400) but return `{ status: "not_implemented" }` for valid requests without making external calls.
 
 ## Validation Gates
 
 These gates prevent the framework from expanding backend surface area faster than the core architecture is proven.
 
-1. **MCP connectivity gate**
-   - Before broadening backend action implementation, prove that a live deployed backend can be invoked from both Codex and Claude through MCP using a low-risk action such as `post_status` or `capture_preview`.
-   - Direct curl checks against `/health` and `/action` are useful smoke tests, but they do not satisfy this gate by themselves.
-   - The passing condition is a real remote MCP server endpoint that both providers can register and invoke over standard MCP transport.
-   - If either provider cannot invoke the backend reliably, treat that as an architecture blocker rather than continuing to add action implementations on assumption.
-2. **Walking skeleton gate**
-   - Before completing all backend stubs, prove one complete vertical slice: `create_project` -> real repository -> bootstrap PR for the validated Next.js path.
-   - The first proof may defer full Azure provisioning, but the GitHub flow must be real and observable entirely through GitHub state.
+1. **MCP connectivity gate** ✅ Cleared (issue #56)
+   - Proved that a live deployed backend can be invoked from both Codex and Claude through MCP.
+   - Validated: Claude Code and Codex Desktop both invoked backend actions via MCP over localtunnel.
+   - Production auth: `/mcp` is now protected by a static Bearer token (`MCP_API_KEY`) generated by `setup-azure.sh` and stored as a Container App secret. Providers must include `Authorization: Bearer <MCP_API_KEY>` when calling `/mcp` in production.
+   - Dev-mode validation used stubs; production uses Bearer token auth (issue #98).
+   - ngrok recommended over localtunnel for future validation runs (more stable).
+2. **Walking skeleton gate** ✅ Cleared (issue #55)
+   - Proved one complete vertical slice: `create_project` → real GitHub repository → bootstrap PR.
+   - Phase 3 expansion: `create_project` orchestrates `configure_cloud` + `configure_repo` asynchronously (background `setImmediate`) after returning the bootstrap PR URL, completing full Azure provisioning + GitHub environment/secret wiring without blocking the HTTP response. PR enrichment (screenshot posting via Azure Blob Storage) implemented in Phase 3 via `capture_preview` + `post_status`.
 
 ## GitHub App Setup Sub-Flow
 
@@ -80,21 +84,24 @@ GitHub App setup is a first-class bootstrap dependency, not a checklist bullet. 
 This action belongs to the ongoing work tier, but it is only valid after framework bootstrap has already completed.
 
 ### Steps
-1. Create a new GitHub repo through the GitHub App.
-2. Scaffold the selected template into the repo.
-3. Write `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, `.ai/context/`, `.devcontainer/devcontainer.json`, workflow wrappers, and infrastructure files.
-4. Enable and validate GitHub Codespaces for the generated repository.
-5. Provision a **dedicated** Azure Container Apps environment for the project (not the framework backend env).
-6. Create GitHub environments (`preview`, `staging`, `production`) with required secrets, variables, and approval gates.
-7. Validate pre-PR prerequisites: GitHub App auth, Azure OIDC trust, Container Apps environment reachability, Codespaces enablement.
-8. Open an initial **bootstrap PR** — do not commit directly to the default branch.
-9. After the bootstrap PR is open, GitHub Actions runs the preview workflow and deploys the first preview environment.
-10. Validate the preview deployment is reachable and post status + screenshot back to the bootstrap PR.
+1. Resolve `azure_subscription_id`: prefer caller-supplied param, fall back to `AZURE_SUBSCRIPTION_ID` env var (set by `setup-azure.sh` during framework bootstrap). Throw immediately if neither is set — no resources are created.
+2. Create a new GitHub repo through the GitHub App.
+3. Scaffold the selected template into the repo.
+4. Write `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, `.ai/context/`, `.devcontainer/devcontainer.json`, workflow wrappers, and infrastructure files.
+5. Enable GitHub Codespaces for the generated repository (best-effort — non-fatal if plan/org restrictions apply).
+6. Create `develop` and `bootstrap/vibe-setup` branches from the scaffold commit.
+7. **Open the bootstrap PR immediately** — before any Azure provisioning. The PR is the GitHub-centered handoff surface and must exist so failures leave a recoverable, visible state in GitHub.
+8. Provision a **dedicated** Azure Container Apps environment for the project via `configure_cloud` (not the framework backend env).
+9. Configure GitHub environments (`preview`, `staging`, `production`) with per-environment OIDC secrets and branch protections via `configure_repo`.
+10. On provisioning success: update the PR body with real Azure outputs (ACR login server, staging/production FQDNs, resource group). Post "✅ Azure provisioning complete" comment to PR.
+11. On provisioning failure: post an error comment to the PR with the error details and retry instructions. The error is NOT re-thrown — it is surfaced as a PR comment so the operator can recover from GitHub. To retry, call `configure_cloud` + `configure_repo` targeting the same repo.
+12. After the bootstrap PR is open, GitHub Actions runs the preview workflow and deploys the first preview environment.
+13. The `post-enrichment` job in `reusable-preview.yml` (triggered automatically after the deploy job succeeds) calls `capture_preview` then `post_status` on the backend, posting a screenshot and structured status comment back to the bootstrap PR. No agent action is required — GitHub Actions drives steps 12–13. The enrichment job is `continue-on-error: true` and skipped gracefully when `VIBE_BACKEND_URL` is not set.
 
 ### Bootstrap PR contents
 - All generated files (`vibe.yaml`, instruction files, workflows, infra)
-- Summary of what was provisioned
-- Checklist: preview URL (populated after CI runs), OIDC status, Codespaces status
+- Azure provisioning outputs table on success (ACR login server, FQDNs, resource group); placeholder checklist if provisioning is retried separately
+- Error comment with retry instructions if provisioning fails
 
 ### Success criteria
 - Bootstrap PR is open and reviewable.
@@ -107,7 +114,10 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 ## `import_project` — Existing Repo Adoption
 
 **Trigger:** Provider tool call or `init.sh --import`
-**Use case:** Adopting an existing GitHub repo into the framework.
+**Use case:** Adopting a **Next.js repo or empty/bare repo** into the framework. This action is NOT a general-purpose adoption path for arbitrary existing repos of unknown stack. Supported targets:
+- **Next.js repos** — must have `package.json` with `"next"` in `dependencies` or `devDependencies`; fails closed with a clear error if `package.json` exists but `"next"` is absent.
+- **Empty/bare repos** — no `package.json`; the caller confirms the repo will be used as a Next.js project after the bootstrap PR is merged.
+- **Not supported:** Python, Ruby, Go, or other non-Node repos. These have no `package.json` and are not detected — callers must not pass them.
 
 This action belongs to the ongoing work tier, but it is only valid after framework bootstrap has already completed.
 
@@ -120,7 +130,7 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 6. Open a **bootstrap PR** — do not modify the default branch directly.
 7. Add to the bootstrap PR: `vibe.yaml`, `CLAUDE.md`, `AGENTS.md`, `.ai/context/`, `.devcontainer/devcontainer.json`, workflow wrappers, and required infra/config files.
 8. After the bootstrap PR is open, GitHub Actions runs the preview workflow and deploys the first preview environment.
-9. Validate the preview deployment is reachable and post status + screenshot back to the bootstrap PR.
+9. The `post-enrichment` job in `reusable-preview.yml` calls `capture_preview` then `post_status` on the backend automatically after the deploy job succeeds. No agent action required. The enrichment job is `continue-on-error: true` and skipped gracefully when `VIBE_BACKEND_URL` is not set.
 10. Avoid restructuring application code unless required for deployability; limit changes to framework adoption files.
 
 ### Bootstrap PR contents
@@ -145,7 +155,8 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 - Apply branch protections to `develop` and `main`.
 - Create GitHub labels: `feature`, `fix`, `docs`, `infra`, `chore`, `phase-1` through `phase-4`.
 - Create GitHub environments: `preview`, `staging`, `production`.
-- Set environment secrets and variables for Azure OIDC and Container Apps.
+- Set per-environment OIDC secrets (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`) using `azure_client_ids` map from `configure_cloud` output.
+- Create the `VIBE_BACKEND_URL` GitHub Actions repo variable when `backend_url` is provided. `create_project` passes `process.env.BACKEND_URL` (set on the Container App by `setup-azure.sh`). This variable is what the `post-enrichment` job in `reusable-preview.yml` reads to call the vibe backend for screenshot + status posting. When absent, no variable is created and enrichment silently skips.
 - Configure required status checks for PR merges.
 - Set production environment protection rules (manual approval required).
 
@@ -157,10 +168,9 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 
 ### Responsibilities
 - Create the project's dedicated resource group.
-- Create the project's dedicated Container Apps environment.
-- Create staging and production Container Apps.
-- Create OIDC federated credentials on the Azure service principal for `preview`, `staging`, and `production` environments.
-- Create Key Vault if needed and grant backend managed identity access.
+- **Container-app path:** Deploy `container-apps-env.json` ARM template; creates Container Apps environment, ACR, staging and production Container Apps; assigns Contributor + AcrPush roles.
+- **Static-web-app path:** Deploy `static-web-app.json` ARM template; creates Azure Static Web App; provisions OIDC credentials for `preview`, `staging`, `production`; assigns Contributor role only (no ACR/AcrPush). Deployment token is fetched at runtime by `reusable-swa-*.yml` workflows via `az staticwebapp secrets list` — NOT stored as a secret.
+- Create OIDC federated credentials on the Azure service principal for `preview`, `staging`, and `production` environments (both paths).
 - Output resource IDs and URLs for use in `configure_repo`.
 
 ---
@@ -171,11 +181,11 @@ This action belongs to the ongoing work tier, but it is only valid after framewo
 **Use case:** Reconfiguration, validation, or repair after backend is already deployed.
 
 ### Responsibilities
-- Re-validate GitHub App auth and permissions.
-- Re-validate OIDC trust.
-- Re-validate backend remote MCP endpoint reachability.
-- Re-validate Codespaces enablement for framework repo.
-- Re-apply framework-level GitHub settings if missing or misconfigured.
+- Validate GitHub App auth (`octokit.apps.getAuthenticated()`).
+- Validate backend `/health` endpoint is reachable and returns 200.
+- Validate GitHub environments (`preview`, `staging`, `production`) exist on the framework repo.
+
+**Out of scope for current implementation:** OIDC trust validation, MCP endpoint reachability, Codespaces enablement, and re-applying framework settings are not performed by this action. If those checks are needed, run them manually or extend this action in a future phase.
 
 ---
 

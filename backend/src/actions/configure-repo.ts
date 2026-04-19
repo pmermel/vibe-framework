@@ -2,14 +2,22 @@ import { z } from "zod";
 import _sodium from "libsodium-wrappers";
 import { getGithubClient } from "../lib/github-client.js";
 
+const AzureClientIdsMap = z.object({
+  preview: z.string(),
+  staging: z.string(),
+  production: z.string(),
+});
+
 const ConfigureRepoParams = z.object({
   github_repo: z.string().regex(/^[^/]+\/[^/]+$/, "Must be owner/repo format"),
   approvers: z.array(z.string()).min(1),
   staging_branch: z.string().default("develop"),
   production_branch: z.string().default("main"),
   azure_client_id: z.string().optional(),
+  azure_client_ids: AzureClientIdsMap.optional(),
   azure_tenant_id: z.string().optional(),
   azure_subscription_id: z.string().optional(),
+  backend_url: z.string().url().optional(),
 });
 
 /** Standard labels to create on the target repository. */
@@ -60,7 +68,13 @@ async function encryptSecret(publicKey: string, secretValue: string): Promise<st
  * - Standard issue labels (`phase-2`, `phase-3`, `phase-4`, `feat`, `fix`, `chore`,
  *   `infra`, `test`, `docs`) — skipped gracefully if they already exist.
  * - Sets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` as environment
- *   secrets on all three environments if all three `azure_*` params are provided.
+ *   secrets on all three environments. When `azure_client_ids` map is provided, each
+ *   environment receives its own per-environment client ID. Falls back to the single
+ *   `azure_client_id` value for backward compatibility when the map is absent.
+ *
+ * Does NOT store an `AZURE_STATIC_WEB_APPS_API_TOKEN` secret. For the static-web-app
+ * adapter, the SWA deployment token is fetched at runtime by the `reusable-swa-*.yml`
+ * framework workflows via `az staticwebapp secrets list` after OIDC login.
  *
  * Does NOT create or modify source code in the repository.
  * Does NOT provision Azure resources — use `configure_cloud` for that.
@@ -73,10 +87,20 @@ async function encryptSecret(publicKey: string, secretValue: string): Promise<st
  *   - `approvers` (string[], required, min 1 — GitHub usernames for production gate)
  *   - `staging_branch` (string, optional, default `"develop"`)
  *   - `production_branch` (string, optional, default `"main"`)
- *   - `azure_client_id` (string, optional) — OIDC client ID output from `configure_cloud`
+ *   - `azure_client_ids` (`{ preview, staging, production }`, optional) — per-environment
+ *     OIDC client IDs from `configure_cloud`. When provided, each environment gets its
+ *     own `AZURE_CLIENT_ID` secret. Takes precedence over `azure_client_id`.
+ *   - `azure_client_id` (string, optional) — single OIDC client ID (backward compat fallback
+ *     when `azure_client_ids` map is not provided)
  *   - `azure_tenant_id` (string, optional) — Azure tenant ID output from `configure_cloud`
  *   - `azure_subscription_id` (string, optional) — Azure subscription ID output from `configure_cloud`
- * @returns `{ configured: true, repo, branch_protections, environments, labels_created, azure_secrets_configured }`
+ *   - `backend_url` (string, optional, valid URL) — when provided, creates or updates the
+ *     `VIBE_BACKEND_URL` GitHub Actions repo variable so the generated project's preview
+ *     workflow can reach the vibe backend for PR enrichment (screenshot + status comment).
+ *     `create_project` passes `process.env.BACKEND_URL` (set on the Container App by
+ *     `setup-azure.sh`). When absent, no variable is created and enrichment is silently
+ *     skipped by the workflow's `if [ -z "$BACKEND_URL" ]` guard.
+ * @returns `{ configured: true, repo, branch_protections, environments, labels_created, azure_secrets_configured, backend_url_configured }`
  * @throws `"Invalid params: ..."` if schema validation fails (caught by handler → 400).
  * @throws GitHub API errors if branch protection or environment operations fail.
  * @throws GitHub API errors if any approver username cannot be resolved — fails closed
@@ -148,24 +172,35 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
   }
 
   // --- Azure OIDC secrets ---
-  // If all three Azure identity params are provided, encrypt and store them as
-  // environment secrets on every environment so workflows can authenticate via OIDC.
+  // Determine whether we have enough Azure identity params to configure secrets.
+  // The per-environment `azure_client_ids` map takes precedence over the single
+  // `azure_client_id` field (backward compat fallback).
+  const hasClientIdsMap = config.azure_client_ids !== undefined;
+  const hasSingleClientId = config.azure_client_id !== undefined;
+  const hasClientId = hasClientIdsMap || hasSingleClientId;
+
   const azureSecretsConfigured =
-    config.azure_client_id !== undefined &&
+    hasClientId &&
     config.azure_tenant_id !== undefined &&
     config.azure_subscription_id !== undefined;
 
   if (azureSecretsConfigured) {
     // Each GitHub environment has its own public key — the repo-level key cannot
-    // be used to encrypt environment secrets.  Fetch each environment's key
+    // be used to encrypt environment secrets. Fetch each environment's key
     // separately so the encrypted values are accepted by the real GitHub API.
-    const azureSecretEntries: Array<[string, string]> = [
-      ["AZURE_CLIENT_ID", config.azure_client_id!],
-      ["AZURE_TENANT_ID", config.azure_tenant_id!],
-      ["AZURE_SUBSCRIPTION_ID", config.azure_subscription_id!],
-    ];
-
     for (const env of ENVIRONMENTS) {
+      // Resolve the client ID for this environment: prefer the per-env map,
+      // fall back to the single azure_client_id for backward compatibility.
+      const clientIdForEnv = hasClientIdsMap
+        ? config.azure_client_ids![env]
+        : config.azure_client_id!;
+
+      const azureSecretEntries: Array<[string, string]> = [
+        ["AZURE_CLIENT_ID", clientIdForEnv],
+        ["AZURE_TENANT_ID", config.azure_tenant_id!],
+        ["AZURE_SUBSCRIPTION_ID", config.azure_subscription_id!],
+      ];
+
       const { data: pubKey } = await octokit.actions.getEnvironmentPublicKey({
         owner,
         repo,
@@ -181,6 +216,38 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
           encrypted_value,
           key_id: pubKey.key_id,
         });
+      }
+    }
+  }
+
+  // --- VIBE_BACKEND_URL repo variable ---
+  // When backend_url is provided, create or update the VIBE_BACKEND_URL GitHub Actions
+  // repo variable so the generated project's preview workflow can call the vibe backend
+  // for PR enrichment. Uses POST first; falls back to PATCH if the variable already exists.
+  // This is a repo-level variable (not a secret) — it is the public HTTPS URL of the backend.
+  let backendUrlConfigured = false;
+  if (config.backend_url) {
+    try {
+      await octokit.request("POST /repos/{owner}/{repo}/actions/variables", {
+        owner,
+        repo,
+        name: "VIBE_BACKEND_URL",
+        value: config.backend_url,
+      });
+      backendUrlConfigured = true;
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status;
+      if (status === 409) {
+        // Variable already exists — update it
+        await octokit.request("PATCH /repos/{owner}/{repo}/actions/variables/{name}", {
+          owner,
+          repo,
+          name: "VIBE_BACKEND_URL",
+          value: config.backend_url,
+        });
+        backendUrlConfigured = true;
+      } else {
+        throw err;
       }
     }
   }
@@ -214,5 +281,6 @@ export async function configureRepo(params: Record<string, unknown>): Promise<un
     environments: [...ENVIRONMENTS],
     labels_created: labelsCreated,
     azure_secrets_configured: azureSecretsConfigured,
+    backend_url_configured: backendUrlConfigured,
   };
 }

@@ -1,6 +1,6 @@
-import http from "http";
 import express from "express";
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import request from "supertest";
+import { describe, it, expect, vi } from "vitest";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpServer, TOOLS } from "./mcp-server.js";
 import { postStatus } from "../actions/post-status.js";
@@ -38,38 +38,21 @@ vi.mock("../actions/post-status.js", () => ({
 }));
 
 // ---------------------------------------------------------------------------
-// In-process HTTP server — transport requires real IncomingMessage / ServerResponse
+// Minimal Express app wiring the MCP endpoint — mirrors router.ts.
+// Uses supertest so no TCP listener or port binding is required; this avoids
+// EPERM failures in restricted CI environments (rootless containers, etc.).
 // ---------------------------------------------------------------------------
 
-let serverUrl: string;
-let httpServer: http.Server;
+const mcpApp = express();
+mcpApp.use(express.json());
 
-beforeAll(
-  () =>
-    new Promise<void>((resolve) => {
-      const app = express();
-      app.use(express.json());
-
-      // Minimal MCP endpoint wiring (mirrors router.ts)
-      app.post("/mcp", async (req, res) => {
-        const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-        const server = createMcpServer();
-        await server.connect(transport);
-        await transport.handleRequest(req, res, req.body);
-        res.on("close", () => server.close());
-      });
-
-      httpServer = http.createServer(app);
-      httpServer.listen(0, () => {
-        const addr = httpServer.address() as { port: number };
-        serverUrl = `http://localhost:${addr.port}`;
-        resolve();
-      });
-    }),
-  5000
-);
-
-afterAll(() => new Promise<void>((resolve) => httpServer.close(() => resolve())));
+mcpApp.post("/mcp", async (req, res) => {
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const server = createMcpServer();
+  await server.connect(transport);
+  await transport.handleRequest(req, res, req.body);
+  res.on("close", () => server.close());
+});
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,19 +69,14 @@ const EXPECTED_TOOL_NAMES = [
   "post_status",
 ];
 
-const MCP_HEADERS = {
-  "Content-Type": "application/json",
-  Accept: "application/json, text/event-stream",
-};
-
 async function mcpPost(body: object): Promise<{ status: number; data: unknown }> {
-  const res = await fetch(`${serverUrl}/mcp`, {
-    method: "POST",
-    headers: MCP_HEADERS,
-    body: JSON.stringify(body),
-  });
-  const text = await res.text();
+  const res = await request(mcpApp)
+    .post("/mcp")
+    .set("Content-Type", "application/json")
+    .set("Accept", "application/json, text/event-stream")
+    .send(body);
   // Strip SSE framing ("data: {...}\n\n") if present
+  const text = res.text;
   const dataLine = text.split("\n").find((l) => l.startsWith("data:"));
   const json = dataLine ? JSON.parse(dataLine.slice(5).trim()) : JSON.parse(text);
   return { status: res.status, data: json };

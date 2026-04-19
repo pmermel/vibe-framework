@@ -1,0 +1,248 @@
+name: "Reusable — Preview (Azure Static Web Apps)"
+# Called by thin wrapper workflows in generated react-vite project repos.
+# Builds the Vite app, fetches the SWA deployment token at runtime via OIDC,
+# and deploys an ephemeral preview environment for the PR. Closes on PR close.
+#
+# Caller example (in generated project):
+#   uses: pmermel/vibe-framework/.github/workflows/reusable-swa-preview.yml@v1
+#   with:
+#     app_name: my-site
+#     resource_group: my-site-rg
+#     swa_name: my-site-swa
+#     install_command: npm install
+#     build_command: npm run build
+#     backend_url: ${{ vars.VIBE_BACKEND_URL }}
+#   secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        type: string
+        required: true
+        description: "Project name — used for PR comment identification"
+      resource_group:
+        type: string
+        required: true
+        description: "Azure resource group containing the Static Web App"
+      swa_name:
+        type: string
+        required: true
+        description: "Azure Static Web App resource name (e.g. my-app-swa)"
+      install_command:
+        type: string
+        required: false
+        default: "npm install"
+        description: "Dependency install command"
+      build_command:
+        type: string
+        required: false
+        default: "npm run build"
+        description: "Application build command"
+      output_location:
+        type: string
+        required: false
+        default: "dist"
+        description: "Build output directory relative to repo root"
+      backend_url:
+        type: string
+        required: false
+        default: ""
+        description: "Vibe backend URL for PR enrichment (optional — enrichment skipped if not set)"
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+    outputs:
+      preview_url:
+        description: "HTTPS URL of the deployed SWA preview environment"
+        value: ${{ jobs.deploy.outputs.preview_url }}
+
+# One active deploy per PR. New pushes cancel the in-progress deploy.
+concurrency:
+  group: swa-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # deploy — runs on PR open, synchronize, and reopen.
+  # Builds the static site, fetches the SWA token via OIDC at runtime, and
+  # deploys an ephemeral preview environment. Posts the preview URL to the PR.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Build and Deploy SWA Preview
+    runs-on: ubuntu-latest
+    if: github.event.action != 'closed'
+    environment: preview
+    permissions:
+      id-token: write      # required for OIDC token exchange with Azure
+      contents: read
+      pull-requests: write  # required to post the preview URL comment
+    outputs:
+      preview_url: ${{ steps.get-url.outputs.preview_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Build
+        run: ${{ inputs.build_command }}
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Fetch SWA deployment token
+        id: get-token
+        run: |
+          TOKEN=$(az staticwebapp secrets list \
+            --name "${{ inputs.swa_name }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --query "properties.apiKey" -o tsv)
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Preview to Azure Static Web Apps
+        id: deploy-swa
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.get-token.outputs.token }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          action: upload
+          app_location: /
+          output_location: ${{ inputs.output_location }}
+          skip_app_build: true
+
+      - name: Get preview URL
+        id: get-url
+        run: |
+          echo "preview_url=${{ steps.deploy-swa.outputs.static-web-app-url }}" >> "$GITHUB_OUTPUT"
+
+      - name: Post preview URL to PR
+        # Upserts a single comment identified by the HTML marker.
+        # Subsequent pushes update the existing comment rather than creating duplicates.
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- vibe-preview-url -->';
+            const previewUrl = '${{ steps.get-url.outputs.preview_url }}';
+            const prNumber = context.payload.pull_request.number;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            const body = [
+              marker,
+              `🚀 **Preview:** ${previewUrl}`,
+              '',
+              `_Deployed from \`${{ github.sha }}\` — updates on each push._`,
+            ].join('\n');
+            const existing = comments.find(c => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+
+  # ---------------------------------------------------------------------------
+  # post-enrichment — runs after a successful deploy (not on PR close).
+  # Calls the vibe backend to capture a screenshot and post a structured
+  # status comment to the PR. continue-on-error: true ensures enrichment
+  # failures never block PR merge or the deploy job result.
+  # Skipped gracefully when backend_url is not set.
+  # ---------------------------------------------------------------------------
+  post-enrichment:
+    name: Post preview enrichment
+    needs: [deploy]
+    if: github.event.action != 'closed' && needs.deploy.result == 'success'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Capture preview and post status
+        env:
+          BACKEND_URL: ${{ inputs.backend_url }}
+          PREVIEW_URL: ${{ needs.deploy.outputs.preview_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPO: ${{ github.repository }}
+        run: |
+          if [ -z "$BACKEND_URL" ]; then
+            echo "VIBE_BACKEND_URL not set — skipping enrichment"
+            exit 0
+          fi
+
+          # Call capture_preview
+          CAPTURE_RESPONSE=$(curl -sf -X POST "$BACKEND_URL/action" \
+            -H "Content-Type: application/json" \
+            -d "{\"action\":\"capture_preview\",\"params\":{\"url\":\"$PREVIEW_URL\",\"github_repo\":\"$GITHUB_REPO\",\"pr_number\":$PR_NUMBER}}" \
+            || echo '{"ok":false}')
+
+          SCREENSHOT_URL=$(echo "$CAPTURE_RESPONSE" | jq -r '.result.screenshot_url // empty')
+
+          # Build post_status params
+          STATUS_PARAMS="{\"action\":\"post_status\",\"params\":{\"github_repo\":\"$GITHUB_REPO\",\"pr_number\":$PR_NUMBER,\"status\":\"success\",\"message\":\"Preview deployed\",\"preview_url\":\"$PREVIEW_URL\""
+          if [ -n "$SCREENSHOT_URL" ]; then
+            STATUS_PARAMS="$STATUS_PARAMS,\"screenshot_url\":\"$SCREENSHOT_URL\""
+          fi
+          STATUS_PARAMS="$STATUS_PARAMS}}"
+
+          curl -sf -X POST "$BACKEND_URL/action" \
+            -H "Content-Type: application/json" \
+            -d "$STATUS_PARAMS" \
+            || echo "post_status call failed — continuing"
+
+  # ---------------------------------------------------------------------------
+  # close — runs when a PR is closed (merged or abandoned).
+  # Calls the SWA deploy action with action: close to deactivate the
+  # ephemeral preview environment. Idempotent — SWA handles the no-op case.
+  # ---------------------------------------------------------------------------
+  close:
+    name: Close SWA Preview Environment
+    runs-on: ubuntu-latest
+    if: github.event.action == 'closed'
+    environment: preview
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Fetch SWA deployment token
+        id: get-token
+        run: |
+          TOKEN=$(az staticwebapp secrets list \
+            --name "${{ inputs.swa_name }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --query "properties.apiKey" -o tsv)
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Close Preview Environment
+        uses: Azure/static-web-apps-deploy@v1
+        with:
+          azure_static_web_apps_api_token: ${{ steps.get-token.outputs.token }}
+          action: close
