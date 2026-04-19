@@ -86,7 +86,7 @@ branch_policy:
   production: main
 
 build:
-  install: npm ci
+  install: npm install
   test: npm test
   build: npm run build
   output: .next
@@ -136,7 +136,7 @@ Generated project using [vibe-framework](https://github.com/pmermel/vibe-framewo
 ## Quick start
 
 \`\`\`bash
-npm ci
+npm install
 npm run dev   # http://localhost:3000
 npm test
 \`\`\`
@@ -309,7 +309,7 @@ function devcontainer(): string {
         "ghcr.io/devcontainers/features/azure-cli:1": {},
       },
       forwardPorts: [3000],
-      postCreateCommand: "npm ci",
+      postCreateCommand: "npm install",
       remoteEnv: { GH_TOKEN: "${localEnv:GH_TOKEN}" },
       customizations: {
         vscode: {
@@ -341,6 +341,12 @@ on:
 
 jobs:
   preview:
+    # id-token: write is required for the reusable workflow to obtain OIDC tokens
+    # for Azure login. pull-requests: write is required to post preview URL comments.
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
     uses: ${p.framework_repo}/.github/workflows/reusable-preview.yml@v1
     with:
       app_name: ${p.name}
@@ -349,6 +355,7 @@ jobs:
       preview_app_prefix: ${p.name}-pr
       registry: ${p.registryName}
       target_port: 3000
+      install_command: npm install
       backend_url: \${{ vars.VIBE_BACKEND_URL }}
     secrets: inherit
 `;
@@ -362,12 +369,18 @@ on:
 
 jobs:
   staging:
+    # id-token: write is required for the reusable workflow to obtain OIDC tokens
+    # for Azure login via the staging environment's federated credential.
+    permissions:
+      id-token: write
+      contents: read
     uses: ${p.framework_repo}/.github/workflows/reusable-staging.yml@v1
     with:
       app_name: ${p.name}
       resource_group: ${p.name}-rg
       staging_app: ${p.name}-staging
       registry: ${p.registryName}
+      install_command: npm install
     secrets: inherit
 `;
 }
@@ -380,12 +393,18 @@ on:
 
 jobs:
   production:
+    # id-token: write is required for the reusable workflow to obtain OIDC tokens
+    # for Azure login via the production environment's federated credential.
+    permissions:
+      id-token: write
+      contents: read
     uses: ${p.framework_repo}/.github/workflows/reusable-production.yml@v1
     with:
       app_name: ${p.name}
       resource_group: ${p.name}-rg
       production_app: ${p.name}-prod
       registry: ${p.registryName}
+      install_command: npm install
     secrets: inherit
 `;
 }
@@ -416,16 +435,19 @@ jobs:
 function dockerfile(): string {
   return `# Multi-stage Next.js production image targeting Azure Container Apps.
 # Requires next.config.ts to have output: "standalone".
+#
+# Note: Uses npm install (not npm ci) because the scaffold does not generate
+# a package-lock.json. Add a lockfile to the repo to use npm ci.
 
 FROM node:20-alpine AS deps
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm install --only=production
 
 FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
 COPY . .
 RUN npm run build
 
@@ -606,7 +628,7 @@ Bootstrapped with [vibe-framework](https://github.com/${p.framework_repo}).
 ## Development
 
 \`\`\`bash
-npm ci
+npm install
 npm run dev
 \`\`\`
 
