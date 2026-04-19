@@ -236,7 +236,7 @@ jobs:
               --image "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest" \
               --target-port ${{ inputs.target_port }} \
               --ingress external \
-              --assign-identity "[system]" \
+              --system-assigned \
               --min-replicas 0 \
               --max-replicas 1
 
