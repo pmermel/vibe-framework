@@ -26,6 +26,9 @@ const ConfigureCloudParams = z.object({
 const GITHUB_ENVIRONMENTS = ["preview", "staging", "production"] as const;
 const CONTRIBUTOR_ROLE_ID = "b24988ac-6180-42a0-ab88-20f7382dd24c";
 const ACR_PUSH_ROLE_ID = "8311e382-0749-4cb8-b61a-304f252e45ec";
+// User Access Administrator — needed for the preview OIDC SP to create AcrPull role assignments
+// on newly-created preview Container App managed identities during the reusable-preview workflow.
+const USER_ACCESS_ADMIN_ROLE_ID = "18d7d88d-d35e-4fb5-a5c3-7773c20a72d9";
 const ARM_API = "https://management.azure.com";
 const GRAPH_API = "https://graph.microsoft.com";
 const ROLE_ASSIGNMENT_API_VERSION = "2022-04-01";
@@ -713,6 +716,33 @@ export async function configureCloud(params: Record<string, unknown>): Promise<u
     if (!acrPushRes.ok && acrPushRes.status !== 409) {
       const err = await acrPushRes.text();
       throw new Error(`ARM API: failed to assign AcrPush for ${env}: ${err}`);
+    }
+
+    // For the preview environment only: also grant User Access Administrator on the ACR.
+    // The reusable-preview workflow creates ephemeral Container Apps with new system-assigned
+    // managed identities, then assigns AcrPull to those identities. That assignment requires
+    // Microsoft.Authorization/roleAssignments/write on the ACR scope, which needs
+    // User Access Administrator (or Owner). Scoped to ACR only, not the full subscription.
+    if (env === "preview") {
+      const uaaAssignmentName = deterministicGuid(acrId, sp.id, USER_ACCESS_ADMIN_ROLE_ID);
+      const uaaRes = await fetch(
+        `${ARM_API}${acrId}/providers/Microsoft.Authorization/roleAssignments/${uaaAssignmentName}?api-version=${ROLE_ASSIGNMENT_API_VERSION}`,
+        {
+          method: "PUT",
+          headers: armHeaders,
+          body: JSON.stringify({
+            properties: {
+              roleDefinitionId: `/subscriptions/${azure_subscription_id}/providers/Microsoft.Authorization/roleDefinitions/${USER_ACCESS_ADMIN_ROLE_ID}`,
+              principalId: sp.id,
+              principalType: "ServicePrincipal",
+            },
+          }),
+        }
+      );
+      if (!uaaRes.ok && uaaRes.status !== 409) {
+        const err = await uaaRes.text();
+        throw new Error(`ARM API: failed to assign User Access Administrator for preview on ACR: ${err}`);
+      }
     }
 
     clientIds[env] = app.appId;
