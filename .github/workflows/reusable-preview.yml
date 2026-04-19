@@ -210,10 +210,27 @@ jobs:
           APP_NAME="${{ inputs.preview_app_prefix }}-${{ github.event.pull_request.number }}"
           IMAGE="${{ inputs.registry }}.azurecr.io/${{ inputs.app_name }}:pr-${{ github.event.pull_request.number }}"
 
-          if az containerapp show \
+          PROVISIONING_STATE=$(az containerapp show \
               --name "$APP_NAME" \
               --resource-group "${{ inputs.resource_group }}" \
-              --output none 2>/dev/null; then
+              --query "properties.provisioningState" \
+              --output tsv 2>/dev/null || echo "NotFound")
+
+          if [ "$PROVISIONING_STATE" = "Failed" ]; then
+            # A prior workflow run left the app in a Failed state (e.g. due to a
+            # ContainerAppOperationInProgress conflict or a bad image pull).
+            # Delete it so this run recreates it cleanly rather than hitting
+            # "Cannot modify a container app because there is an active provisioning
+            # operation in progress."
+            echo "Container App $APP_NAME is in Failed state — deleting for clean recreate."
+            az containerapp delete \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --yes
+            PROVISIONING_STATE="NotFound"
+          fi
+
+          if [ "$PROVISIONING_STATE" != "NotFound" ]; then
             # Subsequent push — system identity and AcrPull already set at creation.
             # Registry auth must be configured via `az containerapp registry set` —
             # `az containerapp update` does not accept --registry-server/--registry-identity.
