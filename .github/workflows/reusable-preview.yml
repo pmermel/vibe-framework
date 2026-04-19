@@ -214,13 +214,18 @@ jobs:
               --name "$APP_NAME" \
               --resource-group "${{ inputs.resource_group }}" \
               --output none 2>/dev/null; then
-            # Subsequent push — system identity and AcrPull already set at creation
+            # Subsequent push — system identity and AcrPull already set at creation.
+            # Registry auth must be configured via `az containerapp registry set` —
+            # `az containerapp update` does not accept --registry-server/--registry-identity.
+            az containerapp registry set \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --server "${{ inputs.registry }}.azurecr.io" \
+              --identity system
             az containerapp update \
               --name "$APP_NAME" \
               --resource-group "${{ inputs.resource_group }}" \
-              --image "$IMAGE" \
-              --registry-server "${{ inputs.registry }}.azurecr.io" \
-              --registry-identity system
+              --image "$IMAGE"
           else
             # First deploy for this PR — create with public placeholder, wire identity, then update
             echo "Creating preview Container App: $APP_NAME"
@@ -264,13 +269,18 @@ jobs:
             echo "Waiting 60 seconds for IAM propagation..."
             sleep 60
 
-            # Step 5: Update to the private ACR image using system identity for pull auth
+            # Step 5: Configure registry auth and update to the private ACR image.
+            # Registry auth must be set via `az containerapp registry set` —
+            # `az containerapp update` does not accept --registry-server/--registry-identity.
+            az containerapp registry set \
+              --name "$APP_NAME" \
+              --resource-group "${{ inputs.resource_group }}" \
+              --server "${{ inputs.registry }}.azurecr.io" \
+              --identity system
             az containerapp update \
               --name "$APP_NAME" \
               --resource-group "${{ inputs.resource_group }}" \
-              --image "$IMAGE" \
-              --registry-server "${{ inputs.registry }}.azurecr.io" \
-              --registry-identity system
+              --image "$IMAGE"
           fi
 
       - name: Get preview URL
