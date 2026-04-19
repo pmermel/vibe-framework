@@ -73,12 +73,6 @@ on:
         description: "HTTPS URL of the deployed preview environment"
         value: ${{ jobs.deploy.outputs.preview_url }}
 
-# One active deploy per PR. New pushes cancel the in-progress deploy,
-# preventing parallel builds from accumulating on the same PR.
-concurrency:
-  group: preview-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
-
 jobs:
   # ---------------------------------------------------------------------------
   # deploy — runs on PR open, synchronize, and reopen.
@@ -90,6 +84,12 @@ jobs:
     name: Deploy preview
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
+    # Concurrency is scoped to the job level (reusable workflows do not support
+    # top-level concurrency). One active deploy per PR — new pushes cancel the
+    # in-progress deploy so parallel builds don't accumulate on the same PR.
+    concurrency:
+      group: preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     # environment: preview scopes the OIDC token subject to
     # repo:<owner>/<repo>:environment:preview, matching the federated credential
     # created by infrastructure/oidc-federated-credential.bicep for this environment.
